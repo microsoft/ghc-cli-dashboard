@@ -1,0 +1,15 @@
+# Generated outputs - contain personal usage data, never commit these
+copilot_usage_*.csv
+usage_dashboard*.html
+team_usage_dashboard*.html
+*.html
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
