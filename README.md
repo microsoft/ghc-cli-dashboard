@@ -11,6 +11,56 @@ to Teams/SharePoint, or attach to a ticket.
 
 ![dashboard preview](docs/preview.png)
 
+## ⚠️ Who this is for (read before sharing widely)
+
+This works for **GitHub Copilot CLI users only** — not GitHub Copilot in
+general. Specifically:
+
+| Works with | Does NOT work with |
+|---|---|
+| GitHub Copilot **CLI** (this terminal agent) | Copilot in VS Code / JetBrains / Visual Studio (IDE completions & chat) |
+| | Copilot Chat on github.com |
+| | Copilot coding agent (background/PR agent) |
+| | Copilot mobile |
+
+If a teammate has never run the `copilot` CLI, `~/.copilot/session-store.db`
+won't exist and there's nothing to extract. This tool only sees usage from
+the CLI, on whichever machine(s) you run the export on — if you use the CLI
+on more than one device, each device needs its own export merged in for a
+complete picture.
+
+## Requirements & limitations
+
+- **Python 3.9+** and `pip install -r requirements.txt` (pandas, plotly).
+- **Read access to `~/.copilot/session-store.db`** — created automatically
+  by Copilot CLI the first time it's used.
+- **Relies on an internal, undocumented local database schema**, not a
+  published/stable public API. It was reverse-engineered from one
+  installation (Copilot CLI **v1.0.79**, Windows) and validated against
+  ~5,300 usage rows spanning that install's full history — there is
+  **no guarantee this schema is stable across CLI versions**, and a future
+  update could silently change or remove fields this tool depends on
+  (`assistant_usage_events`, `total_nano_aiu`, etc.). Treat this as a
+  best-effort community tool, not an officially supported one.
+- **macOS/Linux are untested** — the code is written to be portable
+  (standard `~/.copilot` path, plain SQLite), but has only actually been
+  run on Windows so far.
+- **Cost estimates depend on `total_nano_aiu` being populated per row.**
+  On the one install tested, coverage was 100%, but this hasn't been
+  verified against older CLI versions, and any gap would silently
+  *understate* cost with no warning shown in the dashboard.
+- **Org/enterprise telemetry policies are unverified.** If an organization
+  disables local usage logging, `session-store.db` may be missing or
+  empty — this tool has no way to detect or flag that; it will just look
+  like zero usage.
+- **Requires comfort running Python from a terminal.** For non-technical
+  stakeholders, someone technical will likely need to run the export step
+  on their behalf, or you'll need to package it further (e.g. a scheduled
+  task producing the CSV automatically).
+- Multiple Windows/GitHub accounts on a shared machine will be pooled
+  together unless each account exports separately with a distinct
+  `--user-label`.
+
 ## How it works
 
 1. **`extract_usage.py`** reads `~/.copilot/session-store.db` (a safe
@@ -23,11 +73,6 @@ to Teams/SharePoint, or attach to a ticket.
    dashboard: top projects/tasks, model mix, cost trend, reasoning-effort
    breakdown — with live Project/Model checkbox filters and a Tokens ↔ Cost
    toggle.
-
-## Requirements
-
-- Python 3.9+
-- `pip install -r requirements.txt` (pandas, plotly)
 
 ## Quick start
 
@@ -126,12 +171,11 @@ summaries) so they're never committed.
 
 ## Notes / caveats
 
-- Data source is the local `session-store.db` that ships with Copilot CLI on
-  every machine (Windows/Mac/Linux) — this is a personal, per-machine log,
-  not an org-wide telemetry API. There's no evidence of a broader org-wide
-  usage API accessible from this tool; if GitHub Enterprise admin Copilot
-  usage metrics are needed instead, that's a separate, admin-only data
-  source.
+- See **Requirements & limitations** above for scope/version/platform
+  caveats. This section covers privacy and cost-accuracy notes only.
+- If GitHub Enterprise admin-level Copilot usage metrics are needed instead
+  of this per-machine tool, that's a separate, admin-only data source this
+  project doesn't use or have access to.
 - `--include-task-summary` includes the free-text session/task summary
   (e.g. "Develop Token Usage Dashboard"). Leave it off for wider/less
   trusted sharing, since summaries can contain sensitive task detail.
