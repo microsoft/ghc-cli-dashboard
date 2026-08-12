@@ -143,6 +143,49 @@ Every chart shows compact value labels directly on it (e.g. `"154.9M"`,
 `"$108.22"`) — no hovering required to read values. Hover still shows exact,
 non-rounded figures.
 
+### Explicit axis titles & hover-over explanations
+
+Every chart has a descriptive value/category axis title (e.g. *"Total
+tokens (input + output, summed)"*, *"Project (top 15 by tokens)"*) so the
+unit is never ambiguous at a glance. Each chart card also has a small `?`
+icon — hover it for a plain-English explanation of what the chart shows and
+how to read it. KPI cards and the Date range/Chart metric labels have
+hover tooltips too.
+
+### Date range quick filters
+
+Buttons above the charts — **Last 7 / 14 / 30 / 90 days** or **All time**
+(default) — filter every chart, KPI, and the Top Tasks table to a rolling
+window. "Last N days" is computed relative to the **most recent date in
+your loaded CSV(s)**, not today's real-world date (the export may be a few
+days old), and a hint next to the buttons always states the exact date
+range currently shown. Your choice persists per-browser like the
+project/model filters.
+
+### Value for Money — tokens per dollar by model
+
+A dedicated chart ranks models by `total_tokens ÷ estimated_cost` (tokens
+bought per dollar of list-price spend), highest first, with the call count
+shown per bar so you can judge how much data backs each ranking. This is a
+**pricing-efficiency ratio only** — it does not measure output quality,
+accuracy, or how many tokens a model actually needs to do a task well, and
+a model used mostly at high reasoning-effort will look worse here even if
+its answers are better (reasoning tokens cost more). An auto-generated
+callout names the best/worst-value model (restricted to models with 5+
+calls, to avoid noise from one-off usage).
+
+### Narrative layout & design
+
+The dashboard is organized into five numbered, sequential sections with a
+sticky top nav (**Overview → Trends → Cost & Value → Composition → Task
+Detail**), each with a short blurb explaining what it answers. Charts that
+break down by model (pie, stacked bar, value-for-money) share one
+consistent colour-per-model palette, so a given model is recognizable
+across charts without re-reading legends. Auto-generated insight callouts
+(e.g. top project's % share, biggest single-day usage jump, best-value
+model) surface the headline takeaway of each section in plain language,
+so someone skimming doesn't have to interpret raw charts unassisted.
+
 ## Scaling to a team
 
 - **Personal**: run both scripts on your own machine to see your own usage.
@@ -181,3 +224,12 @@ summaries) so they're never committed.
   trusted sharing, since summaries can contain sensitive task detail.
 - Cost figures are list-price estimates derived from token counts — see
   the Estimated cost section above for the caveat on accuracy.
+
+## Maintainer note: Plotly title syntax
+
+`dashboard.py` bundles **Plotly.js v3.7.0** (via `plotly.offline.get_plotlyjs()`).
+That version requires every `title` — chart title and axis titles — to be
+an **object**, e.g. `title: { text: "..." }`, not the plain-string shorthand
+(`title: "..."`) that older Plotly versions auto-converted. Passing a plain
+string silently renders no title at all (no error). If you add a new chart
+or edit an existing title, use the object form.
