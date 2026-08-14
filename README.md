@@ -195,6 +195,12 @@ days old), and a hint next to the buttons always states the exact date
 range currently shown. Your choice persists per-browser like the
 project/model filters.
 
+### Trend aggregation
+
+The Trends over time chart can be grouped by **Day**, **Week**, or **Month**.
+Weekly buckets start on Monday, and monthly buckets use calendar months. The
+selected grouping is remembered in the browser for that dashboard file.
+
 ### Value for Money — tokens per dollar by model
 
 A dedicated chart ranks models by `total_tokens ÷ estimated_cost` (tokens
