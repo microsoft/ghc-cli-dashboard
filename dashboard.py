@@ -196,6 +196,10 @@ def build_dashboard(data: pd.DataFrame, out_path: str, title: str,
   .date-toggle {{ display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }}
   .date-toggle button.active {{ background: var(--good); color: white; border-color: var(--good); }}
   .date-range-hint {{ font-size: 12px; color: var(--muted); font-weight: 600; }}
+  .trend-toggle {{ display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 0 12px 36px; }}
+  .trend-toggle button {{ padding: 6px 14px; border: 1px solid var(--border); border-radius: 999px; background: #f6f8fb; cursor: pointer; font-size: 13px; font-weight: 600; }}
+  .trend-toggle button:hover {{ background: #e9eef7; }}
+  .trend-toggle button.active {{ background: var(--accent); color: white; border-color: var(--accent); }}
   .kpi {{ cursor: help; }}
   .card {{ position: relative; }}
   .info-icon {{
@@ -294,11 +298,17 @@ def build_dashboard(data: pd.DataFrame, out_path: str, title: str,
 
       <div class="section" id="sec-trends">
         <div class="section-head"><span class="num">2</span><h2>Trends over time</h2></div>
-        <p class="section-desc">How usage moves day to day &mdash; look here for spikes tied to specific work pushes, or a steady baseline that suggests routine usage.</p>
+        <p class="section-desc">How usage moves over time &mdash; look here for spikes tied to specific work pushes, or a steady baseline that suggests routine usage.</p>
+        <div class="trend-toggle">
+          <span class="metric-label" title="Choose the time bucket used to aggregate the trend chart. Week uses Monday-starting weeks; month uses calendar months.">Group by:</span>
+          <button id="trend-day" onclick="setTrendGranularity('day')">Day</button>
+          <button id="trend-week" onclick="setTrendGranularity('week')">Week</button>
+          <button id="trend-month" onclick="setTrendGranularity('month')">Month</button>
+        </div>
         <div id="insight-trends" class="insight-bar"></div>
         <div class="grid">
           <div class="card full">
-            <span class="info-icon" title="One point per calendar day: the sum of the current metric across all selected projects/models within that day. Useful for spotting usage spikes, dips, or day-of-week patterns. Respects the date-range filter above.">?</span>
+            <span class="info-icon" title="One point per selected day, Monday-starting week, or calendar month: the sum of the current metric across all selected projects/models within that period. Respects the date-range filter above.">?</span>
             <div id="fig_trend" style="height:400px;"></div>
           </div>
         </div>
@@ -358,6 +368,7 @@ const STORAGE_KEY_PROJECT = "copilot_usage_excluded_projects::{storage_key}";
 const STORAGE_KEY_MODEL = "copilot_usage_excluded_models::{storage_key}";
 const STORAGE_KEY_METRIC = "copilot_usage_metric::{storage_key}";
 const STORAGE_KEY_DATEFILTER = "copilot_usage_datefilter::{storage_key}";
+const STORAGE_KEY_TREND = "copilot_usage_trend_granularity::{storage_key}";
 const STORAGE_KEY_SIDEBAR = "copilot_usage_sidebar_collapsed::{storage_key}";
 const DEFAULT_EXCLUDED_PROJECTS = {exclude_default_projects_json};
 const DEFAULT_EXCLUDED_MODELS = {exclude_default_models_json};
@@ -424,6 +435,31 @@ function getDateFilter() {{ return localStorage.getItem(STORAGE_KEY_DATEFILTER) 
 function setDateFilter(v) {{
   localStorage.setItem(STORAGE_KEY_DATEFILTER, v);
   render();
+}}
+
+function getTrendGranularity() {{ return localStorage.getItem(STORAGE_KEY_TREND) || "day"; }}
+
+function setTrendGranularity(v) {{
+  localStorage.setItem(STORAGE_KEY_TREND, v);
+  render();
+}}
+
+function updateTrendGranularityButtons(granularity) {{
+  ["day", "week", "month"].forEach(value => {{
+    const button = document.getElementById("trend-" + value);
+    if (button) button.classList.toggle("active", value === granularity);
+  }});
+}}
+
+function trendBucket(date, granularity) {{
+  if (granularity === "month") return date.slice(0, 7);
+  if (granularity === "week") {{
+    const d = new Date(date + "T00:00:00Z");
+    const mondayOffset = (d.getUTCDay() + 6) % 7;
+    d.setUTCDate(d.getUTCDate() - mondayOffset);
+    return d.toISOString().slice(0, 10);
+  }}
+  return date;
 }}
 
 let taskTableRows = [];
@@ -668,16 +704,23 @@ function render() {{
   }}
 
   // Trend over time
-  const byDate = groupSum(filtered, r => r.date, valKey);
+  const granularity = getTrendGranularity();
+  updateTrendGranularityButtons(granularity);
+  const trendUnit = granularity === "day" ? "day" : granularity === "week" ? "week" : "month";
+  const byDate = groupSum(filtered, r => trendBucket(r.date, granularity), valKey);
   const dateEntries = Array.from(byDate.entries()).sort((a, b) => a[0] < b[0] ? -1 : 1);
+  const trendTitle = metric === "cost" ? "Estimated Cost Over Time" : "Token Usage Over Time";
+  const trendAxisTitle = granularity === "day"
+    ? "Date (calendar day)"
+    : granularity === "week" ? "Week starting (Monday)" : "Month (calendar)";
   Plotly.react("fig_trend", [{{
     x: dateEntries.map(d => d[0]), y: dateEntries.map(d => d[1]), type: "scatter", mode: "lines+markers+text",
     line: {{ color: "#238636", width: 2.5 }}, marker: {{ size: 6 }}, fill: "tozeroy", fillcolor: "rgba(35,134,54,0.08)",
     text: dateEntries.map(d => fmtVal(d[1])), textposition: "top center",
     hovertemplate: "%{{x}}: %{{y:,}} " + unitLabel + "<extra></extra>",
-  }}], {{ title: {{ text: metric === "cost" ? "Estimated Cost Over Time" : "Token Usage Over Time" }}, xaxis: {{ title: {{ text: "Date (calendar day)" }} }}, yaxis: {{ title: {{ text: valAxisTitle }} }} }}, {{ responsive: true }});
+  }}], {{ title: {{ text: trendTitle + " (by " + trendUnit + ")" }}, xaxis: {{ title: {{ text: trendAxisTitle }} }}, yaxis: {{ title: {{ text: valAxisTitle }} }} }}, {{ responsive: true }});
 
-  // Trend insight: flag the single biggest day-over-day jump, if any
+  // Trend insight: flag the single biggest period-over-period jump, if any
   const insightTrends = document.getElementById("insight-trends");
   if (insightTrends) {{
     if (dateEntries.length >= 2) {{
@@ -687,10 +730,10 @@ function render() {{
         if (jump > maxJump) {{ maxJump = jump; maxJumpIdx = i; }}
       }}
       insightTrends.innerHTML = maxJumpIdx > 0
-        ? `<div class="insight"><span>&#128640;</span><span>Biggest single-day increase: <b>${{dateEntries[maxJumpIdx][0]}}</b> jumped to <b>${{fmtVal(dateEntries[maxJumpIdx][1])}}</b> (up ${{fmtVal(maxJump)}} from the day before).</span></div>`
-        : `<div class="insight"><span>&#128200;</span><span>Usage held roughly steady across the selected date range - no single large spike.</span></div>`;
+        ? `<div class="insight"><span>&#128640;</span><span>Biggest ${{trendUnit}} increase: <b>${{dateEntries[maxJumpIdx][0]}}</b> rose to <b>${{fmtVal(dateEntries[maxJumpIdx][1])}}</b> (up ${{fmtVal(maxJump)}} from the previous ${{trendUnit}}).</span></div>`
+        : `<div class="insight"><span>&#128200;</span><span>Usage held roughly steady across the selected date range - no single large ${{trendUnit}} spike.</span></div>`;
     }} else {{
-      insightTrends.innerHTML = `<div class="insight"><span>&#8505;</span><span>Not enough days in the current selection to show a trend - widen the date range to see day-over-day movement.</span></div>`;
+      insightTrends.innerHTML = `<div class="insight"><span>&#8505;</span><span>Not enough ${{trendUnit}}s in the current selection to show a trend - widen the date range or choose a finer grouping.</span></div>`;
     }}
   }}
 
