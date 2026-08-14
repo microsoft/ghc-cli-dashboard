@@ -129,11 +129,22 @@ def build_dashboard(data: pd.DataFrame, out_path: str, title: str,
   .section-head h2 {{ font-size: 19px; font-weight: 650; }}
   .section-desc {{ color: var(--muted); font-size: 13px; margin: 0 0 16px 36px; max-width: 780px; }}
   .layout {{ display: flex; gap: 24px; align-items: flex-start; }}
-  .sidebar {{ flex: 0 0 270px; display: flex; flex-direction: column; gap: 14px; position: sticky; top: 14px; max-height: 92vh; }}
+  .sidebar {{ flex: 0 0 270px; display: flex; flex-direction: column; gap: 14px; position: sticky; top: 14px; max-height: 92vh; transition: flex-basis 0.15s, width 0.15s; }}
+  .layout.sidebar-collapsed .sidebar {{ flex: 0 0 auto; }}
+  .layout.sidebar-collapsed .side-panel,
+  .layout.sidebar-collapsed .sidebar .hint {{ display: none; }}
   .side-panel {{ background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; padding: 14px; overflow-y: auto; box-shadow: var(--shadow); }}
   #proj-panel {{ max-height: 46vh; }}
   #model-panel {{ max-height: 30vh; }}
   .side-panel h2 {{ margin-top: 0; font-size: 14px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }}
+  .sidebar-toggle {{
+    display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%;
+    padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--card-bg);
+    cursor: pointer; font-size: 12.5px; font-weight: 650; color: var(--muted); box-shadow: var(--shadow);
+  }}
+  .sidebar-toggle:hover {{ background: #f6f8fb; color: var(--text); }}
+  .layout.sidebar-collapsed .sidebar-toggle {{ width: 40px; padding: 8px; }}
+  .layout.sidebar-collapsed .sidebar-toggle .toggle-label {{ display: none; }}
   .main {{ flex: 1; min-width: 0; }}
   .kpi-row {{ display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 8px; }}
   .kpi {{
@@ -211,8 +222,11 @@ def build_dashboard(data: pd.DataFrame, out_path: str, title: str,
     </div>
   </div>
   <div class="page">
-  <div class="layout">
+  <div class="layout" id="layout">
     <div class="sidebar">
+      <button class="sidebar-toggle" id="sidebar-toggle" onclick="toggleSidebar()" title="Show/hide the Projects and Models filter panel">
+        <span id="sidebar-toggle-icon">&laquo;</span><span class="toggle-label">Hide filters</span>
+      </button>
       <div class="side-panel" id="proj-panel">
         <h2>Projects</h2>
         <div class="proj-buttons">
@@ -336,6 +350,7 @@ const STORAGE_KEY_PROJECT = "copilot_usage_excluded_projects::{storage_key}";
 const STORAGE_KEY_MODEL = "copilot_usage_excluded_models::{storage_key}";
 const STORAGE_KEY_METRIC = "copilot_usage_metric::{storage_key}";
 const STORAGE_KEY_DATEFILTER = "copilot_usage_datefilter::{storage_key}";
+const STORAGE_KEY_SIDEBAR = "copilot_usage_sidebar_collapsed::{storage_key}";
 const DEFAULT_EXCLUDED_PROJECTS = {exclude_default_projects_json};
 const DEFAULT_EXCLUDED_MODELS = {exclude_default_models_json};
 
@@ -640,6 +655,30 @@ function setAll(kind, checked) {{
   render();
 }}
 
+function resizeAllCharts() {{
+  document.querySelectorAll(".js-plotly-plot").forEach(el => {{
+    try {{ Plotly.Plots.resize(el); }} catch (e) {{ /* chart not yet drawn */ }}
+  }});
+}}
+
+function applySidebarState(collapsed) {{
+  const layout = document.getElementById("layout");
+  const icon = document.getElementById("sidebar-toggle-icon");
+  const btn = document.getElementById("sidebar-toggle");
+  layout.classList.toggle("sidebar-collapsed", collapsed);
+  icon.innerHTML = collapsed ? "&raquo;" : "&laquo;";
+  btn.title = collapsed ? "Show the Projects and Models filter panel" : "Hide the Projects and Models filter panel";
+}}
+
+function toggleSidebar() {{
+  const collapsed = document.getElementById("layout").classList.contains("sidebar-collapsed");
+  const next = !collapsed;
+  localStorage.setItem(STORAGE_KEY_SIDEBAR, next ? "1" : "0");
+  applySidebarState(next);
+  // Wait for the flex transition to finish before telling Plotly to resize.
+  setTimeout(resizeAllCharts, 180);
+}}
+
 document.addEventListener("change", (e) => {{
   let kind = null;
   if (e.target.classList.contains("proj-check")) kind = "project";
@@ -651,6 +690,7 @@ document.addEventListener("change", (e) => {{
   render();
 }});
 
+applySidebarState(localStorage.getItem(STORAGE_KEY_SIDEBAR) === "1");
 render();
 </script>
 </body>
