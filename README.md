@@ -6,8 +6,10 @@ exists on your machine. No new logging, no org API access, no backend
 required.
 
 Output is a single self-contained HTML file (Plotly, JS embedded inline) —
-open it by double-click in any browser, fully offline. Safe to email, post
-to Teams/SharePoint, or attach to a ticket.
+open it by double-click in any browser, fully offline. The generated HTML can
+be shared by email, Teams/SharePoint, or ticket attachment after checking that
+the selected projects and optional task summaries are appropriate for the
+audience.
 
 ![dashboard preview](docs/preview.png)
 
@@ -77,7 +79,7 @@ complete picture.
 ## Quick start
 
 ```powershell
-git clone <this-repo-url>
+git clone https://github.com/martinchan_microsoft/ghc-cli-dashboard.git
 cd ghc-cli-dashboard
 pip install -r requirements.txt
 
@@ -124,12 +126,18 @@ want shown by default) with:
 
 ```powershell
 python dashboard.py --in "copilot_usage_*.csv" `
-  --exclude-default "Music,D:,2026 - Durham,Admiral" `
+  --exclude-default "Project Alpha,Project Beta,Weekend Planning" `
   --exclude-default-models "gemini-3.5-flash"
 ```
 
 (Only affects first load — once you toggle checkboxes yourself, your
 browser's choice wins.)
+
+### Collapsible filter panel
+
+The Projects and Models filter sidebar can be collapsed with **Hide filters**
+to give the charts more room. Its state is remembered in the browser alongside
+the other dashboard selections.
 
 ### Reasoning effort mix
 
@@ -177,7 +185,7 @@ calls, to avoid noise from one-off usage).
 ### Narrative layout & design
 
 The dashboard is organized into five numbered, sequential sections with a
-sticky top nav (**Overview → Trends → Cost & Value → Composition → Task
+top navigation (**Overview → Trends → Cost & Value → Composition → Task
 Detail**), each with a short blurb explaining what it answers. Charts that
 break down by model (pie, stacked bar, value-for-money) share one
 consistent colour-per-model palette, so a given model is recognizable
@@ -194,7 +202,7 @@ so someone skimming doesn't have to interpret raw charts unassisted.
      Teams/SharePoint/OneDrive folder (optionally on a schedule, e.g. a
      weekly Windows Task Scheduler job).
      ```powershell
-     python extract_usage.py --user-label "jsmith" --out "\\team\share\copilot_usage_jsmith_2026-08-11.csv"
+     python extract_usage.py --user-label "jsmith" --out "\\team\share\copilot_usage_jsmith_YYYY-MM-DD.csv"
      ```
   2. Anyone points `dashboard.py` at the shared folder to get one combined
      dashboard across the whole team (adds a Users chart automatically when
@@ -203,14 +211,14 @@ so someone skimming doesn't have to interpret raw charts unassisted.
      python dashboard.py --in "\\team\share\copilot_usage_*.csv" --out team_usage_dashboard.html
      ```
 
-## Sharing this repo
+## Repository and generated files
 
-This repo is currently local-only (`git init` has been run here, nothing
-pushed). To share it later: push to a GitHub repo (personal or org) when
-ready, or just zip the folder / share it via a network drive — there's no
-dependency on any particular host. `.gitignore` already excludes generated
-CSV/HTML outputs (which contain your personal usage data and task
-summaries) so they're never committed.
+The project is maintained in the private GitHub repository
+[`martinchan_microsoft/ghc-cli-dashboard`](https://github.com/martinchan_microsoft/ghc-cli-dashboard).
+Generated CSV and HTML outputs are excluded by `.gitignore` because they can
+contain personal usage data, project names, and optional task summaries. The
+repository's preview image uses synthetic project names; its displayed
+figures are representative dashboard data.
 
 ## Notes / caveats
 
