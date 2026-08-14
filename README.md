@@ -157,6 +157,13 @@ The Projects and Models filter sidebar can be collapsed with **Hide filters**
 to give the charts more room. Its state is remembered in the browser alongside
 the other dashboard selections.
 
+### Task detail table
+
+The Task detail section includes a client-side search across project and task
+names, clickable sorting for every column, and a **Copy table** button that
+copies the currently displayed top 20 rows as tab-separated text for pasting
+into Excel, Teams, or an email.
+
 ### Reasoning effort mix
 
 A chart breaks down tokens/cost by `reasoning_effort`
