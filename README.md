@@ -78,7 +78,7 @@ complete picture.
 
 ```powershell
 git clone <this-repo-url>
-cd copilot-usage-dashboard
+cd ghc-cli-dashboard
 pip install -r requirements.txt
 
 # 1. Export your usage (run anytime, e.g. weekly)
