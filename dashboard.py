@@ -164,6 +164,14 @@ def build_dashboard(data: pd.DataFrame, out_path: str, title: str,
   th, td {{ border-bottom: 1px solid var(--border); padding: 8px 10px; text-align: left; }}
   th {{ background: #f6f8fb; font-weight: 650; color: var(--muted); text-transform: uppercase; font-size: 11px; letter-spacing: 0.03em; }}
   tr:hover td {{ background: #f6f9ff; }}
+  .table-toolbar {{ display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }}
+  .table-filter {{ flex: 1 1 280px; display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 650; color: var(--muted); }}
+  .table-filter input {{ flex: 1; min-width: 160px; padding: 7px 9px; border: 1px solid var(--border); border-radius: 6px; font: inherit; color: var(--text); background: white; }}
+  .table-action {{ padding: 7px 12px; border: 1px solid var(--border); border-radius: 6px; background: #f6f8fb; cursor: pointer; font-size: 12px; font-weight: 650; }}
+  .table-action:hover {{ background: #e9eef7; }}
+  .table-status {{ font-size: 12px; color: var(--muted); }}
+  .table-sort {{ border: 0; padding: 0; background: transparent; color: inherit; font: inherit; font-weight: inherit; text-transform: inherit; letter-spacing: inherit; cursor: pointer; }}
+  .table-sort:hover {{ color: var(--accent-dark); }}
   .full {{ grid-column: 1 / -1; }}
   .proj-buttons {{ display: flex; gap: 8px; margin-bottom: 10px; }}
   .proj-buttons button {{ flex: 1; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: #f6f8fb; cursor: pointer; font-size: 12px; font-weight: 600; }}
@@ -322,7 +330,7 @@ def build_dashboard(data: pd.DataFrame, out_path: str, title: str,
 
       <div class="section" id="sec-detail">
         <div class="section-head"><span class="num">5</span><h2>Task detail</h2></div>
-        <p class="section-desc">The individual tasks driving the totals above, ranked by the current chart metric.</p>
+        <p class="section-desc">The individual tasks driving the totals above, ranked by the current chart metric. Search across all tasks, sort any column, or copy the displayed top 20 rows.</p>
         <div id="table-wrap"></div>
       </div>
 
@@ -416,6 +424,148 @@ function getDateFilter() {{ return localStorage.getItem(STORAGE_KEY_DATEFILTER) 
 function setDateFilter(v) {{
   localStorage.setItem(STORAGE_KEY_DATEFILTER, v);
   render();
+}}
+
+let taskTableRows = [];
+let taskSearchQuery = "";
+let taskSortKey = null;
+let taskSortAscending = false;
+
+function escapeHtml(value) {{
+  return String(value ?? "").replace(/[&<>"']/g, ch =>
+    ch === "&" ? "&amp;" :
+    ch === "<" ? "&lt;" :
+    ch === ">" ? "&gt;" :
+    ch === '"' ? "&quot;" : "&#39;"
+  );
+}}
+
+function taskSortValue(row, key) {{
+  return key === "project" ? row.project :
+    key === "task" ? row.task :
+    key === "cost" ? row.cost : row.tokens;
+}}
+
+function taskSortIndicator(key) {{
+  return taskSortKey === key ? (taskSortAscending ? " ▲" : " ▼") : "";
+}}
+
+function getVisibleTaskRows() {{
+  const query = taskSearchQuery.trim().toLowerCase();
+  const rows = taskTableRows.filter(row =>
+    !query || `${{row.project}} ${{row.task}}`.toLowerCase().includes(query)
+  );
+  const key = taskSortKey || "tokens";
+  rows.sort((a, b) => {{
+    const av = taskSortValue(a, key);
+    const bv = taskSortValue(b, key);
+    const result = typeof av === "number"
+      ? av - bv
+      : String(av).localeCompare(String(bv), undefined, {{ sensitivity: "base" }});
+    return taskSortAscending ? result : -result;
+  }});
+  return rows;
+}}
+
+function getDisplayedTaskRows() {{
+  return getVisibleTaskRows().slice(0, 20);
+}}
+
+function renderTaskTable() {{
+  const wrap = document.getElementById("table-wrap");
+  if (!HAS_TASKS || !taskTableRows.length) {{
+    wrap.innerHTML = "";
+    return;
+  }}
+  const matchingRows = getVisibleTaskRows();
+  const rows = matchingRows.slice(0, 20);
+  const htmlRows = rows.map(row => `
+    <tr>
+      <td>${{escapeHtml(row.project)}}</td>
+      <td>${{escapeHtml(row.task)}}</td>
+      <td style="text-align:right">${{fmt(row.tokens)}}</td>
+      <td style="text-align:right">${{fmtCurrency(row.cost)}}</td>
+    </tr>
+  `).join("");
+  const countText = taskSearchQuery.trim()
+    ? `Showing ${{rows.length}} of ${{matchingRows.length}} matching tasks`
+    : `Showing top ${{rows.length}} of ${{taskTableRows.length}} tasks`;
+  wrap.innerHTML = `
+    <div class="card full" style="overflow-x:auto;">
+      <div class="table-toolbar">
+        <label class="table-filter">Filter tasks
+          <input id="task-filter" type="search" placeholder="Search project or task..." value="${{escapeHtml(taskSearchQuery)}}" oninput="setTaskSearch(this.value)">
+        </label>
+        <button class="table-action" onclick="copyTaskTable()">Copy table</button>
+        <span class="table-status" id="task-copy-status">${{countText}}</span>
+      </div>
+      <table id="task-table">
+        <thead><tr>
+          <th><button class="table-sort" onclick="sortTaskTable('project')">Project${{taskSortIndicator("project")}}</button></th>
+          <th><button class="table-sort" onclick="sortTaskTable('task')">Task${{taskSortIndicator("task")}}</button></th>
+          <th style="text-align:right"><button class="table-sort" onclick="sortTaskTable('tokens')">Total tokens${{taskSortIndicator("tokens")}}</button></th>
+          <th style="text-align:right"><button class="table-sort" onclick="sortTaskTable('cost')">Est. cost${{taskSortIndicator("cost")}}</button></th>
+        </tr></thead>
+        <tbody>${{htmlRows || '<tr><td colspan="4" style="text-align:center;color:var(--muted);">No matching tasks</td></tr>'}}</tbody>
+      </table>
+    </div>
+  `;
+}}
+
+function setTaskSearch(value) {{
+  taskSearchQuery = value;
+  renderTaskTable();
+  const input = document.getElementById("task-filter");
+  if (input) {{
+    input.focus();
+    input.setSelectionRange(value.length, value.length);
+  }}
+}}
+
+function sortTaskTable(key) {{
+  if (taskSortKey === key) taskSortAscending = !taskSortAscending;
+  else {{
+    taskSortKey = key;
+    taskSortAscending = key === "project" || key === "task";
+  }}
+  renderTaskTable();
+}}
+
+function taskTableText() {{
+  return [
+    ["Project", "Task", "Total tokens", "Est. cost"],
+    ...getDisplayedTaskRows().map(row => [row.project, row.task, fmt(row.tokens), fmtCurrency(row.cost)])
+  ].map(row => row.join("\\t")).join("\\n");
+}}
+
+function showTaskCopyStatus(message) {{
+  const status = document.getElementById("task-copy-status");
+  if (status) status.textContent = message;
+}}
+
+function fallbackCopyTaskTable(text) {{
+  const area = document.createElement("textarea");
+  area.value = text;
+  area.style.position = "fixed";
+  area.style.opacity = "0";
+  document.body.appendChild(area);
+  area.select();
+  let copied = false;
+  try {{ copied = document.execCommand("copy"); }}
+  finally {{ area.remove(); }}
+  showTaskCopyStatus(copied ? "Copied to clipboard" : "Copy failed; select the table manually.");
+}}
+
+function copyTaskTable() {{
+  const text = taskTableText();
+  if (navigator.clipboard && navigator.clipboard.writeText) {{
+    navigator.clipboard.writeText(text).then(
+      () => showTaskCopyStatus("Copied to clipboard"),
+      () => fallbackCopyTaskTable(text)
+    );
+  }} else {{
+    fallbackCopyTaskTable(text);
+  }}
 }}
 
 // Returns the cutoff date string (inclusive) for the active quick filter, or null for "all time"
@@ -627,7 +777,6 @@ function render() {{
   }}
 
   // Top tasks table (always shown by tokens + cost together)
-  const wrap = document.getElementById("table-wrap");
   if (HAS_TASKS) {{
     const byTask = new Map();
     for (const r of filtered) {{
@@ -638,13 +787,9 @@ function render() {{
       t.tokens += r.total_tokens;
       t.cost += r.estimated_cost;
     }}
-    const topTasks = Array.from(byTask.values()).sort((a, b) => b[metric === "cost" ? "cost" : "tokens"] - a[metric === "cost" ? "cost" : "tokens"]).slice(0, 20);
-    const rows = topTasks.map(t => `<tr><td>${{t.project}}</td><td>${{t.task}}</td><td style="text-align:right">${{fmt(t.tokens)}}</td><td style="text-align:right">${{fmtCurrency(t.cost)}}</td></tr>`).join("");
-    wrap.innerHTML = topTasks.length ? `
-      <div class="card full" style="overflow-x:auto;">
-      <table><thead><tr><th>Project</th><th>Task</th><th style="text-align:right">Total tokens</th><th style="text-align:right">Est. cost</th></tr></thead><tbody>${{rows}}</tbody></table>
-      </div>
-    ` : "";
+    taskTableRows = Array.from(byTask.values());
+    if (!taskSortKey) taskSortKey = metric === "cost" ? "cost" : "tokens";
+    renderTaskTable();
   }}
 }}
 
