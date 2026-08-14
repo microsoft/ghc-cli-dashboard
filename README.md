@@ -13,6 +13,24 @@ audience.
 
 ![dashboard preview](docs/preview.png)
 
+## Dashboard sections
+
+The preview above shows **Overview**. The remaining sections provide focused
+views of usage trends, pricing efficiency, model composition, and task detail.
+These documentation screenshots use synthetic project and task names; the
+displayed figures are representative.
+
+<table>
+  <tr>
+    <td><strong>Trends over time</strong><br><img src="docs/trends.png" alt="Trends over time section" width="100%"></td>
+    <td><strong>Cost &amp; value</strong><br><img src="docs/value.png" alt="Cost and value section" width="100%"></td>
+  </tr>
+  <tr>
+    <td><strong>Composition</strong><br><img src="docs/composition.png" alt="Composition section" width="100%"></td>
+    <td><strong>Task detail</strong><br><img src="docs/detail.png" alt="Task detail section" width="100%"></td>
+  </tr>
+</table>
+
 ## ⚠️ Who this is for (read before sharing widely)
 
 This works for **GitHub Copilot CLI users only** — not GitHub Copilot in
