@@ -229,6 +229,7 @@ def build_dashboard(data: pd.DataFrame, out_path: str, title: str,
       <a href="#sec-overview">Overview</a>
       <a href="#sec-trends">Trends</a>
       <a href="#sec-value">Cost &amp; Value</a>
+      <a href="#sec-patterns">Work Patterns</a>
       <a href="#sec-composition">Composition</a>
       <a href="#sec-detail">Task Detail</a>
     </div>
@@ -327,8 +328,28 @@ def build_dashboard(data: pd.DataFrame, out_path: str, title: str,
         </div>
       </div>
 
+      <div class="section" id="sec-patterns">
+        <div class="section-head"><span class="num">4</span><h2>Work patterns</h2></div>
+        <p class="section-desc">A transparent, rule-based view of the kinds of work represented in task summaries &mdash; useful for spotting shifts between exploration, planning, execution, and review. These are inferred themes, not measures of productivity or individual performance.</p>
+        <div id="work-patterns-note" class="hint" style="margin:0 0 16px 36px;"></div>
+        <div class="grid">
+          <div class="card full">
+            <span class="info-icon" title="Groups task summaries into inferred themes using transparent keyword rules, then sums the current metric by theme over the selected day/week/month buckets. Tasks that do not match a rule remain Other.">?</span>
+            <div id="fig_theme_time" style="height:420px;"></div>
+          </div>
+          <div class="card">
+            <span class="info-icon" title="Shows the current metric for inferred task themes split by model. This can indicate which models are being used for exploration, analysis, planning, execution, or review work.">?</span>
+            <div id="fig_theme_model" style="height:420px;"></div>
+          </div>
+          <div class="card">
+            <span class="info-icon" title="Shows the balance of inferred work modes. Exploration includes learning and analysis; execution covers building and implementation; planning and review/support are shown separately.">?</span>
+            <div id="fig_work_mode" style="height:420px;"></div>
+          </div>
+        </div>
+      </div>
+
       <div class="section" id="sec-composition">
-        <div class="section-head"><span class="num">4</span><h2>Composition</h2></div>
+        <div class="section-head"><span class="num">5</span><h2>Composition</h2></div>
         <p class="section-desc">How your top projects break down by model &mdash; useful for spotting projects that lean heavily on one (possibly expensive) model.</p>
         <div class="grid">
           <div class="card full">
@@ -339,7 +360,7 @@ def build_dashboard(data: pd.DataFrame, out_path: str, title: str,
       </div>
 
       <div class="section" id="sec-detail">
-        <div class="section-head"><span class="num">5</span><h2>Task detail</h2></div>
+        <div class="section-head"><span class="num">6</span><h2>Task detail</h2></div>
         <p class="section-desc">The individual tasks driving the totals above, ranked by the current chart metric. Search across all tasks, sort any column, or copy the displayed top 20 rows.</p>
         <div id="table-wrap"></div>
       </div>
@@ -604,6 +625,41 @@ function copyTaskTable() {{
   }}
 }}
 
+const TASK_THEME_ORDER = [
+  "Explore & learn",
+  "Analyze & decide",
+  "Plan & organize",
+  "Build & implement",
+  "Review & communicate",
+  "Other",
+];
+const TASK_THEME_MODE = {{
+  "Explore & learn": "Exploration",
+  "Analyze & decide": "Exploration",
+  "Plan & organize": "Planning",
+  "Build & implement": "Execution",
+  "Review & communicate": "Review/support",
+  "Other": "Other",
+}};
+const TASK_THEME_COLORS = {{
+  "Explore & learn": "#8250df",
+  "Analyze & decide": "#a371f7",
+  "Plan & organize": "#bf8700",
+  "Build & implement": "#2f6feb",
+  "Review & communicate": "#1a7f37",
+  "Other": "#8c959f",
+}};
+
+function inferTaskTheme(summary) {{
+  const text = String(summary || "").toLowerCase();
+  if (/(implement|build|create|develop|add|integrat|install|fix|enhanc|code|debug)/.test(text)) return "Build & implement";
+  if (/(research|explor|investigat|understand|discover|learn)/.test(text)) return "Explore & learn";
+  if (/(analy|evaluat|assess|compar|clarif|validat|decid)/.test(text)) return "Analyze & decide";
+  if (/(plan|prepar|organiz|tidy|itinerary)/.test(text)) return "Plan & organize";
+  if (/(review|improv|document|report|comment|summar|update)/.test(text)) return "Review & communicate";
+  return "Other";
+}}
+
 // Returns the cutoff date string (inclusive) for the active quick filter, or null for "all time"
 function computeCutoffDate(dateFilter) {{
   if (dateFilter === "all" || !GLOBAL_MAX_DATE) return null;
@@ -790,6 +846,84 @@ function render() {{
       insightValue.innerHTML = `<div class="insight"><span>&#8505;</span><span>Not enough models with 5+ calls in the current selection for a reliable value comparison.</span></div>`;
     }}
   }}
+
+  // Work patterns: transparent rule-based themes from task summaries
+  const taskData = HAS_TASKS
+    ? filtered.filter(r => r.task_summary).map(r => ({{ ...r, theme: inferTaskTheme(r.task_summary) }}))
+    : [];
+  const patternsNote = document.getElementById("work-patterns-note");
+  if (patternsNote) {{
+    patternsNote.innerHTML = taskData.length
+      ? "Themes are inferred from task-summary keywords; unclassified summaries appear as <b>Other</b>. Use this as a workflow signal, not a productivity score."
+      : "No task summaries are available. Re-run <code>extract_usage.py --include-task-summary</code> to populate Work patterns.";
+  }}
+
+  const themeTimeMap = new Map();
+  for (const r of taskData) {{
+    const bucket = trendBucket(r.date, granularity);
+    if (!themeTimeMap.has(bucket)) themeTimeMap.set(bucket, new Map());
+    const themeValues = themeTimeMap.get(bucket);
+    themeValues.set(r.theme, (themeValues.get(r.theme) || 0) + (r[valKey] || 0));
+  }}
+  const themeBuckets = Array.from(themeTimeMap.keys()).sort();
+  const themeTimeTraces = TASK_THEME_ORDER.map(theme => ({{
+    name: theme,
+    x: themeBuckets,
+    y: themeBuckets.map(bucket => themeTimeMap.get(bucket).get(theme) || 0),
+    type: "bar",
+    marker: {{ color: TASK_THEME_COLORS[theme] }},
+    hovertemplate: "%{{x}}<br>" + theme + ": %{{y:,}} " + unitLabel + "<extra></extra>",
+  }})).filter(trace => trace.y.some(v => v > 0));
+  Plotly.react("fig_theme_time", themeTimeTraces, {{
+    barmode: "stack",
+    title: {{ text: "Inferred Task Themes Over Time (by " + trendUnit + ")" }},
+    xaxis: {{ title: {{ text: trendAxisTitle }} }},
+    yaxis: {{ title: {{ text: valAxisTitle }} }},
+  }}, {{ responsive: true }});
+
+  const themeModels = MODEL_ORDER.filter(model => taskData.some(r => r.model === model));
+  const themeModelValues = TASK_THEME_ORDER.map(theme =>
+    themeModels.map(model => taskData
+      .filter(r => r.theme === theme && r.model === model)
+      .reduce((total, r) => total + (r[valKey] || 0), 0))
+  );
+  Plotly.react("fig_theme_model", [{{
+    x: themeModels,
+    y: TASK_THEME_ORDER,
+    z: themeModelValues,
+    type: "heatmap",
+    colorscale: "Blues",
+    text: themeModelValues.map(row => row.map(v => fmtVal(v))),
+    texttemplate: "%{{text}}",
+    hovertemplate: "%{{y}}<br>%{{x}}: %{{z:,}} " + unitLabel + "<extra></extra>",
+    colorbar: {{ title: {{ text: unitLabel }} }},
+  }}], {{
+    title: {{ text: "Inferred Task Theme by Model" }},
+    xaxis: {{ title: {{ text: "Model" }} }},
+    yaxis: {{ title: {{ text: "Inferred theme" }} }},
+    margin: {{ l: 150, b: 120 }},
+  }}, {{ responsive: true }});
+
+  const modeValues = new Map();
+  for (const r of taskData) {{
+    const mode = TASK_THEME_MODE[r.theme] || "Other";
+    modeValues.set(mode, (modeValues.get(mode) || 0) + (r[valKey] || 0));
+  }}
+  const modeEntries = Array.from(modeValues.entries()).sort((a, b) => b[1] - a[1]);
+  const modeColors = {{ Exploration: "#8250df", Execution: "#2f6feb", Planning: "#bf8700", "Review/support": "#1a7f37", Other: "#8c959f" }};
+  Plotly.react("fig_work_mode", [{{
+    labels: modeEntries.map(entry => entry[0]),
+    values: modeEntries.map(entry => entry[1]),
+    type: "pie",
+    hole: 0.48,
+    marker: {{ colors: modeEntries.map(entry => modeColors[entry[0]] || "#8c959f") }},
+    textinfo: "label+percent",
+    texttemplate: "%{{label}}<br>%{{percent}} (%{{value:.3s}})",
+    hovertemplate: "%{{label}}: %{{value:,}} " + unitLabel + " (%{{percent}})<extra></extra>",
+  }}], {{
+    title: {{ text: "Inferred Work-mode Balance" }},
+    showlegend: false,
+  }}, {{ responsive: true }});
 
   // By user (only if multi-user)
   if (document.getElementById("fig_user")) {{
