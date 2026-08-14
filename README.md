@@ -201,6 +201,15 @@ The Trends over time chart can be grouped by **Day**, **Week**, or **Month**.
 Weekly buckets start on Monday, and monthly buckets use calendar months. The
 selected grouping is remembered in the browser for that dashboard file.
 
+### Work patterns
+
+When task summaries are included, the Work patterns section applies transparent
+keyword rules to infer themes such as **Explore & learn**, **Analyze & decide**,
+**Plan & organize**, **Build & implement**, and **Review & communicate**. It
+shows theme mix over time, theme by model, and an exploration/execution-style
+work-mode balance. These are inferred workflow signals, not productivity or
+performance measures.
+
 ### Value for Money — tokens per dollar by model
 
 A dedicated chart ranks models by `total_tokens ÷ estimated_cost` (tokens
