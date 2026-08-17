@@ -7,8 +7,12 @@ This is intentionally a static-HTML output (Plotly, embedded JS) so it can be
 emailed, posted to Teams/SharePoint, or opened by anyone with zero installs -
 no server, no Streamlit, no Python needed to VIEW it (only to generate it).
 Project AND model checkboxes let you exclude either from every chart; your
-choices are remembered per-browser via localStorage. Charts show on-chart
-value labels (compact, e.g. "154.9M") so you don't need to hover to read them.
+choices are remembered per-browser via localStorage. Note: unchecking a
+project/model only hides it from the current browser's view - the excluded
+rows are still present in the generated HTML file itself (see README for
+details; build-time redaction is a planned future improvement, not yet
+implemented). Charts show on-chart value labels (compact, e.g. "154.9M") so
+you don't need to hover to read them.
 
 Usage:
     python dashboard.py --in "copilot_usage_*.csv" --out usage_dashboard.html
@@ -20,6 +24,7 @@ import glob
 import json
 import sys
 from datetime import datetime
+from html import escape as _esc
 
 import pandas as pd
 from plotly.offline import get_plotlyjs
@@ -51,10 +56,33 @@ def load_data(pattern: str) -> pd.DataFrame:
     return data
 
 
+def _json_for_script(obj) -> str:
+    """Serialize obj to JSON safe for inline embedding inside a <script> block.
+
+    json.dumps alone is not enough here: the result is spliced directly into
+    an HTML <script> element via an f-string, so a data value containing
+    "</script>" would terminate the block early (and start a *new*,
+    attacker-controlled one), and "<!--"/"-->" sequences can confuse HTML
+    parsers mid-script. U+2028/U+2029 are valid in JSON strings but are line
+    terminators when they appear literally inside a JS string literal in
+    older engines. Escaping '<', '>', '&' and both line separators to their
+    \\uXXXX forms neutralizes all of that while leaving the *value* JSON.parse
+    would see completely unchanged.
+    """
+    return (
+        json.dumps(obj, ensure_ascii=False)
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("&", "\\u0026")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
+
+
 def _checkbox_items(order, totals, css_class):
     return "".join(
-        f'<label class="proj-item"><input type="checkbox" class="{css_class}" value="{p.replace(chr(34), "&quot;")}" checked> '
-        f'<span class="proj-name">{p}</span> <span class="proj-tok">{int(totals[p]):,}</span></label>'
+        f'<label class="proj-item"><input type="checkbox" class="{css_class}" value="{_esc(p, quote=True)}" checked> '
+        f'<span class="proj-name">{_esc(p)}</span> <span class="proj-tok">{int(totals[p]):,}</span></label>'
         for p in order
     )
 
@@ -90,22 +118,31 @@ def build_dashboard(data: pd.DataFrame, out_path: str, title: str,
 
     n_users = data["user"].nunique()
 
-    raw_json = json.dumps(records, ensure_ascii=False)
-    project_order_json = json.dumps(project_order, ensure_ascii=False)
-    model_order_json = json.dumps(model_order, ensure_ascii=False)
-    exclude_default_projects_json = json.dumps(exclude_default_projects, ensure_ascii=False)
-    exclude_default_models_json = json.dumps(exclude_default_models, ensure_ascii=False)
+    # All of these are embedded verbatim inside a <script> block below, so they
+    # go through _json_for_script (not plain json.dumps) - see its docstring.
+    raw_json = _json_for_script(records)
+    project_order_json = _json_for_script(project_order)
+    model_order_json = _json_for_script(model_order)
+    exclude_default_projects_json = _json_for_script(exclude_default_projects)
+    exclude_default_models_json = _json_for_script(exclude_default_models)
+    storage_key_project_json = _json_for_script(f"copilot_usage_excluded_projects::{storage_key}")
+    storage_key_model_json = _json_for_script(f"copilot_usage_excluded_models::{storage_key}")
+    storage_key_metric_json = _json_for_script(f"copilot_usage_metric::{storage_key}")
+    storage_key_datefilter_json = _json_for_script(f"copilot_usage_datefilter::{storage_key}")
+    storage_key_trend_json = _json_for_script(f"copilot_usage_trend_granularity::{storage_key}")
+    storage_key_sidebar_json = _json_for_script(f"copilot_usage_sidebar_collapsed::{storage_key}")
 
     project_checkbox_items = _checkbox_items(project_order, projects_by_tokens, "proj-check")
     model_checkbox_items = _checkbox_items(model_order, models_by_tokens, "model-check")
 
     plotly_js = get_plotlyjs()
+    title_html = _esc(title)
 
     html = f"""<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
-<title>{title}</title>
+<title>{title_html}</title>
 <script>{plotly_js}</script>
 <style>
   :root {{
@@ -240,7 +277,7 @@ def build_dashboard(data: pd.DataFrame, out_path: str, title: str,
 </head>
 <body>
   <div class="hero">
-    <h1>{title}</h1>
+    <h1>{title_html}</h1>
     <p class="subtitle">Generated {datetime.now():%Y-%m-%d %H:%M} &middot; source: Copilot CLI session-store.db exports &middot; uncheck a project or model in the sidebar to exclude it from every chart</p>
     <div class="nav-pills">
       <a href="#sec-overview">Overview</a>
@@ -402,12 +439,12 @@ const MODEL_PALETTE = ["#2f6feb", "#f0883e", "#3fb950", "#a371f7", "#db6d28", "#
 const MODEL_COLORS = {{}};
 MODEL_ORDER.forEach((m, i) => {{ MODEL_COLORS[m] = MODEL_PALETTE[i % MODEL_PALETTE.length]; }});
 const HAS_TASKS = {str(has_tasks).lower()};
-const STORAGE_KEY_PROJECT = "copilot_usage_excluded_projects::{storage_key}";
-const STORAGE_KEY_MODEL = "copilot_usage_excluded_models::{storage_key}";
-const STORAGE_KEY_METRIC = "copilot_usage_metric::{storage_key}";
-const STORAGE_KEY_DATEFILTER = "copilot_usage_datefilter::{storage_key}";
-const STORAGE_KEY_TREND = "copilot_usage_trend_granularity::{storage_key}";
-const STORAGE_KEY_SIDEBAR = "copilot_usage_sidebar_collapsed::{storage_key}";
+const STORAGE_KEY_PROJECT = {storage_key_project_json};
+const STORAGE_KEY_MODEL = {storage_key_model_json};
+const STORAGE_KEY_METRIC = {storage_key_metric_json};
+const STORAGE_KEY_DATEFILTER = {storage_key_datefilter_json};
+const STORAGE_KEY_TREND = {storage_key_trend_json};
+const STORAGE_KEY_SIDEBAR = {storage_key_sidebar_json};
 const DEFAULT_EXCLUDED_PROJECTS = {exclude_default_projects_json};
 const DEFAULT_EXCLUDED_MODELS = {exclude_default_models_json};
 
@@ -514,6 +551,19 @@ function escapeHtml(value) {{
   );
 }}
 
+// Neutralizes CSV/TSV "formula injection": if pasted or opened in Excel/Sheets,
+// a cell whose text starts with =, +, -, @ (or a leading tab/CR that could shift
+// which cell a formula lands in) can be interpreted as an active formula/DDE
+// command instead of plain text. Prefixing with a leading apostrophe forces
+// spreadsheet apps to treat the cell as literal text; embedded tab/newline
+// characters are flattened so a single field can't inject extra TSV columns
+// or rows. Only used for the copy-to-clipboard text - the underlying
+// row.project/row.task values used for search/sort/filter are untouched.
+function sanitizeForSpreadsheet(value) {{
+  const s = String(value ?? "").replace(/[\\t\\r\\n]/g, " ");
+  return /^[=+\\-@]/.test(s) ? "'" + s : s;
+}}
+
 function taskSortValue(row, key) {{
   return key === "project" ? row.project :
     key === "task" ? row.task :
@@ -608,7 +658,7 @@ function sortTaskTable(key) {{
 function taskTableText() {{
   return [
     ["Project", "Task", "Total tokens", "Est. cost"],
-    ...getDisplayedTaskRows().map(row => [row.project, row.task, fmt(row.tokens), fmtCurrency(row.cost)])
+    ...getDisplayedTaskRows().map(row => [sanitizeForSpreadsheet(row.project), sanitizeForSpreadsheet(row.task), fmt(row.tokens), fmtCurrency(row.cost)])
   ].map(row => row.join("\\t")).join("\\n");
 }}
 
@@ -724,7 +774,7 @@ function render() {{
   const nModels = new Set(filtered.map(r => r.model)).size;
   const nUsers = new Set(filtered.map(r => r.user)).size;
   const dates = filtered.map(r => r.date).filter(Boolean).sort();
-  const dateRange = dates.length ? (dates[0] + " &rarr; " + dates[dates.length - 1]) : "n/a";
+  const dateRange = dates.length ? (escapeHtml(dates[0]) + " &rarr; " + escapeHtml(dates[dates.length - 1])) : "n/a";
   document.getElementById("kpi-row").innerHTML = `
     <div class="kpi" title="Sum of total_tokens (prompt + completion) across every call matching the current project/model/date filters."><div class="kpi-value">${{fmt(totalTokens)}}</div><div class="kpi-label">Total tokens</div></div>
     <div class="kpi" title="Estimated USD cost using GitHub's published per-token list prices, applied to the same filtered calls. Estimate only - plan allowances, included credits, or discounts are not reflected."><div class="kpi-value">${{fmtCurrency(totalCost)}}</div><div class="kpi-label">Est. cost (list price)</div></div>
@@ -767,11 +817,11 @@ function render() {{
     const bits = [];
     if (topProjects.length) {{
       const topShare = totalTokens > 0 ? (100 * sum(filtered.filter(r => r.project === topProjects[0][0]), "total_tokens") / totalTokens).toFixed(0) : 0;
-      bits.push(`<div class="insight"><span>&#128200;</span><span><b>${{topProjects[0][0]}}</b> is your top project, accounting for <b>${{topShare}}%</b> of total tokens in the current selection.</span></div>`);
+      bits.push(`<div class="insight"><span>&#128200;</span><span><b>${{escapeHtml(topProjects[0][0])}}</b> is your top project, accounting for <b>${{topShare}}%</b> of total tokens in the current selection.</span></div>`);
     }}
     if (modelEntries.length) {{
       const topModelShare = totalTokens > 0 ? (100 * sum(filtered.filter(r => r.model === modelEntries[0][0]), "total_tokens") / totalTokens).toFixed(0) : 0;
-      bits.push(`<div class="insight good"><span>&#129504;</span><span><b>${{modelEntries[0][0]}}</b> is your most-used model, at <b>${{topModelShare}}%</b> of total tokens.</span></div>`);
+      bits.push(`<div class="insight good"><span>&#129504;</span><span><b>${{escapeHtml(modelEntries[0][0])}}</b> is your most-used model, at <b>${{topModelShare}}%</b> of total tokens.</span></div>`);
     }}
     insightOverview.innerHTML = bits.join("");
   }}
@@ -803,7 +853,7 @@ function render() {{
         if (jump > maxJump) {{ maxJump = jump; maxJumpIdx = i; }}
       }}
       insightTrends.innerHTML = maxJumpIdx > 0
-        ? `<div class="insight"><span>&#128640;</span><span>Biggest ${{trendUnit}} increase: <b>${{dateEntries[maxJumpIdx][0]}}</b> rose to <b>${{fmtVal(dateEntries[maxJumpIdx][1])}}</b> (up ${{fmtVal(maxJump)}} from the previous ${{trendUnit}}).</span></div>`
+        ? `<div class="insight"><span>&#128640;</span><span>Biggest ${{trendUnit}} increase: <b>${{escapeHtml(dateEntries[maxJumpIdx][0])}}</b> rose to <b>${{fmtVal(dateEntries[maxJumpIdx][1])}}</b> (up ${{fmtVal(maxJump)}} from the previous ${{trendUnit}}).</span></div>`
         : `<div class="insight"><span>&#128200;</span><span>Usage held roughly steady across the selected date range - no single large ${{trendUnit}} spike.</span></div>`;
     }} else {{
       insightTrends.innerHTML = `<div class="insight"><span>&#8505;</span><span>Not enough ${{trendUnit}}s in the current selection to show a trend - widen the date range or choose a finer grouping.</span></div>`;
@@ -858,7 +908,7 @@ function render() {{
     if (reliableValue.length >= 2) {{
       const best = reliableValue[0], worst = reliableValue[reliableValue.length - 1];
       const multiple = (best.tpd / worst.tpd).toFixed(1);
-      insightValue.innerHTML = `<div class="insight good"><span>&#128181;</span><span><b>${{best.model}}</b> gives the most tokens per dollar (${{fmtCompact(best.tpd)}} tok/$), about <b>${{multiple}}&times;</b> more than <b>${{worst.model}}</b> (${{fmtCompact(worst.tpd)}} tok/$) among models with 5+ calls.</span></div>`;
+      insightValue.innerHTML = `<div class="insight good"><span>&#128181;</span><span><b>${{escapeHtml(best.model)}}</b> gives the most tokens per dollar (${{fmtCompact(best.tpd)}} tok/$), about <b>${{multiple}}&times;</b> more than <b>${{escapeHtml(worst.model)}}</b> (${{fmtCompact(worst.tpd)}} tok/$) among models with 5+ calls.</span></div>`;
     }} else {{
       insightValue.innerHTML = `<div class="insight"><span>&#8505;</span><span>Not enough models with 5+ calls in the current selection for a reliable value comparison.</span></div>`;
     }}

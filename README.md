@@ -5,11 +5,16 @@ Find out which projects/tasks consume the most GitHub Copilot CLI tokens
 exists on your machine. No new logging, no org API access, no backend
 required.
 
+**Primary use case: your own local usage.** Run both scripts on your own
+machine to see your own numbers — no sharing, no team folder, no exposure
+of anything beyond what already lives in your local `session-store.db`.
+The multi-user "team rollup" workflow described later in this README also
+works (the scripts and de-duplication logic already support it), but it is
+a secondary scenario, and one you should think through before using: see
+**Privacy notes on the generated HTML** below.
+
 Output is a single self-contained HTML file (Plotly, JS embedded inline) —
-open it by double-click in any browser, fully offline. The generated HTML can
-be shared by email, Teams/SharePoint, or ticket attachment after checking that
-the selected projects and optional task summaries are appropriate for the
-audience.
+open it by double-click in any browser, fully offline.
 
 ![dashboard preview](docs/preview.png)
 
@@ -84,11 +89,14 @@ complete picture.
 ## How it works
 
 1. **`extract_usage.py`** reads `~/.copilot/session-store.db` (a safe
-   read-only copy — never touches or locks the live DB) and writes an
-   anonymized CSV: one row per session/model/day/reasoning-effort, with
+   read-only copy — never touches or locks the live DB) and writes a
+   privacy-reduced CSV: one row per session/model/day/reasoning-effort, with
    token and cost totals. Local folder paths are reduced to just the repo
-   name or last folder name, so exports are safe to share outside your
-   machine.
+   name or last folder name, so exports don't leak your full local directory
+   structure. This is **path-minimization, not anonymization** — the CSV
+   still contains your username/label, project and model names, and
+   (with `--include-task-summary`) free-text task summaries; review its
+   contents before sharing it anywhere.
 2. **`dashboard.py`** reads one or many of those CSVs and renders the HTML
    dashboard: top projects/tasks, model mix, cost trend, reasoning-effort
    breakdown — with live Project/Model checkbox filters and a Tokens ↔ Cost
@@ -100,10 +108,47 @@ complete picture.
    recently exported copy of each row, so old exports are safe to leave in
    place.
 
+## Privacy notes on the generated HTML
+
+- The Project/Model checkboxes and the `--exclude-default` /
+  `--exclude-default-models` flags only control what's **visually shown**
+  in the browser. They do **not** remove any row from the generated HTML
+  file — every project, model, date, and (if included) task summary from
+  the input CSV(s) is embedded in the file's data and is recoverable by
+  anyone who opens the file's source (e.g. "View Page Source" or a text
+  editor), even for items you've unchecked or excluded by default.
+  Build-time redaction (actually dropping rows before the file is written)
+  is a **planned future improvement**, not implemented yet.
+- All data-derived text (project/model names, task summaries, the
+  dashboard title) is HTML/JS-escaped when the file is generated, so it
+  can't inject scripts or break the page - but escaping controls how the
+  data is *rendered*, not whether it's *present*. If you need to actually
+  exclude certain projects/tasks from the file, filter your input CSV(s)
+  before running `dashboard.py` (e.g. remove those rows, or don't pass
+  `--include-task-summary` if summaries may contain sensitive detail).
+- If you share a generated dashboard, treat it the same as you'd treat the
+  source CSV(s) it was built from.
+- **Spreadsheet formula injection.** The dashboard's "Copy table" button
+  (Task detail section) neutralizes cell text that would otherwise be
+  interpreted as an active formula/DDE command if pasted into Excel/Sheets
+  (values starting with `=`, `+`, `-`, or `@` are prefixed with a leading
+  `'`, and embedded tabs/newlines are flattened so a single field can't
+  inject extra rows/columns). **The raw CSV files produced by
+  `extract_usage.py` are not similarly neutralized** — if a project name or
+  task summary happens to start with one of those characters and the CSV
+  is opened directly in a spreadsheet application (rather than through
+  `dashboard.py`), that cell could be interpreted as a formula. This is not
+  mitigated in this release because doing so would require prefixing the
+  `project` field itself, which is also used as an identifier for matching
+  and de-duplication elsewhere in this tool, and changing its stored value
+  is a format decision that deserves its own change/testing pass rather
+  than a drive-by fix here. If you open exported CSVs directly in Excel,
+  be aware of this risk, or import them as plain text.
+
 ## Quick start
 
 ```powershell
-git clone https://github.com/martinchan_microsoft/ghc-cli-dashboard.git
+git clone https://github.com/microsoft/ghc-cli-dashboard.git
 cd ghc-cli-dashboard
 pip install -r requirements.txt
 
@@ -242,8 +287,12 @@ so someone skimming doesn't have to interpret raw charts unassisted.
 
 ## Scaling to a team
 
-- **Personal**: run both scripts on your own machine to see your own usage.
-- **Team-wide rollup** — no backend needed:
+- **Personal (primary scenario)**: run both scripts on your own machine to
+  see your own usage — nothing leaves your machine.
+- **Team-wide rollup** — no backend needed, but read
+  **Privacy notes on the generated HTML** above first, since the resulting
+  file embeds every row from every teammate's CSV, and checkbox/default
+  filters only hide rows visually:
   1. Everyone runs `extract_usage.py` and drops the CSV into a shared
      Teams/SharePoint/OneDrive folder (optionally on a schedule, e.g. a
      weekly Windows Task Scheduler job).
@@ -259,8 +308,8 @@ so someone skimming doesn't have to interpret raw charts unassisted.
 
 ## Repository and generated files
 
-The project is maintained in the private GitHub repository
-[`martinchan_microsoft/ghc-cli-dashboard`](https://github.com/martinchan_microsoft/ghc-cli-dashboard).
+The project is maintained in the GitHub repository
+[`microsoft/ghc-cli-dashboard`](https://github.com/microsoft/ghc-cli-dashboard).
 Generated CSV and HTML outputs are excluded by `.gitignore` because they can
 contain personal usage data, project names, and optional task summaries. The
 repository's preview image uses synthetic project names; its displayed
@@ -278,6 +327,23 @@ figures are representative dashboard data.
   trusted sharing, since summaries can contain sensitive task detail.
 - Cost figures are list-price estimates derived from token counts — see
   the Estimated cost section above for the caveat on accuracy.
+
+## Running tests
+
+A small pytest suite in `tests/` guards the security-sensitive parts of
+`dashboard.py` — HTML/JS escaping of project/model names, the dashboard
+title, and the task-detail table's `</script>`-safe JSON embedding, plus
+formula-injection neutralization in the "Copy table" TSV clipboard text.
+
+```powershell
+pip install -r requirements.txt -r requirements-dev.txt
+python -m pytest tests/ -v
+```
+
+A few tests execute the generated dashboard's inline JavaScript in a
+lightweight fake-DOM harness (`tests/dom_harness.js`) via Node.js to verify
+runtime behavior end-to-end; those are skipped automatically if `node` isn't
+on `PATH`.
 
 ## Maintainer note: Plotly title syntax
 
