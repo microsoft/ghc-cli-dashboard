@@ -78,7 +78,11 @@ def test_extract_usage_emits_export_format_version_and_exported_at(tmp_path, mon
     assert "export_format_version" in df.columns
     assert "exported_at" in df.columns
     assert (df["export_format_version"].astype(str) == extract_usage.EXPORT_FORMAT_VERSION).all()
-    assert extract_usage.EXPORT_FORMAT_VERSION == "2"
+    # Bumped to "3" when `cost_data_calls` (a cost-coverage counter) was added -
+    # a new column is a shape change per this project's own versioning policy
+    # (see extract_usage.py's EXPORT_FORMAT_VERSION comment).
+    assert extract_usage.EXPORT_FORMAT_VERSION == "3"
+    assert "cost_data_calls" in df.columns
 
     # exported_at must be parseable and timezone-aware (not a naive timestamp).
     parsed = pd.to_datetime(df["exported_at"])

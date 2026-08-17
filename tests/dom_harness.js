@@ -100,7 +100,13 @@ sandbox.window = sandbox;
 sandbox.globalThis = sandbox;
 
 vm.createContext(sandbox);
-vm.runInContext(mainScript, sandbox, { filename: "dashboard-inline.js" });
+// Append a test-only trailer (same script/lexical scope, so it can still see
+// top-level `const RAW = ...`) that mirrors RAW onto `window` - top-level
+// const/let bindings are NOT copied onto the contextified sandbox object by
+// Node's vm module (only `var`/function declarations are), so without this
+// `sandbox.RAW` would otherwise be undefined outside the script.
+const mainScriptWithTestHook = mainScript + "\nwindow.__RAW_FOR_TESTS = (typeof RAW !== 'undefined') ? RAW : null;\n";
+vm.runInContext(mainScriptWithTestHook, sandbox, { filename: "dashboard-inline.js" });
 
 let tsv = "";
 try {
@@ -125,7 +131,25 @@ for (const s of probeInputs) {
   probes.escapeHtml[s] = typeof sandbox.escapeHtml === "function" ? sandbox.escapeHtml(s) : null;
 }
 
-const out = { elements: {}, tsv, probes };
+// Direct probes of the cost-coverage/token-composition helpers over the
+// dataset's full, unfiltered RAW array - lets Python tests assert on the
+// underlying aggregate math (no divide-by-zero, correct full/partial/
+// unknown classification, category totals) independent of chart rendering
+// (Plotly itself is stubbed out above and does not compute anything).
+let coverage = null, composition = null;
+try {
+  const rawForTests = sandbox.__RAW_FOR_TESTS;
+  if (typeof sandbox.computeCostCoverage === "function" && Array.isArray(rawForTests)) {
+    coverage = sandbox.computeCostCoverage(rawForTests);
+  }
+  if (typeof sandbox.computeTokenComposition === "function" && Array.isArray(rawForTests)) {
+    composition = sandbox.computeTokenComposition(rawForTests);
+  }
+} catch (e) {
+  coverage = "ERROR:" + e.message;
+}
+
+const out = { elements: {}, tsv, probes, coverage, composition, valueEntries: sandbox.__debugValueEntries ?? null };
 for (const [id, el] of Object.entries(ELEMENTS)) {
   out.elements[id] = { innerHTML: el._innerHTML, textContent: el._textContent };
 }
