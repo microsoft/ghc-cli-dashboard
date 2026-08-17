@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """
 extract_usage.py - Extract GitHub Copilot CLI token-usage data from the local
-session-store.db into an anonymized, shareable CSV.
+session-store.db into a privacy-reduced CSV.
+
+Note: this reduces exposure (folder paths are minimized to a repo/folder
+name) but does not anonymize the data - it still contains your OS username
+(or --user-label), project/repo names, model names, and, with
+--include-task-summary, free-text task summaries. Review a CSV's contents
+before sharing it outside your machine.
 
 Data source: ~/.copilot/session-store.db (SQLite). This file exists with the
 same schema on every machine that runs Copilot CLI (Windows/Mac/Linux), so
