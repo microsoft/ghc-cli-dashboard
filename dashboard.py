@@ -26,15 +26,129 @@ import sys
 from datetime import datetime
 from html import escape as _esc
 
+import numpy as np
 import pandas as pd
 from plotly.offline import get_plotlyjs
+
+# Columns every input CSV must have for a record to be constructed at all -
+# these are read unconditionally (no getattr/default) in build_dashboard().
+REQUIRED_COLUMNS = ["user", "date", "project", "model", "calls", "total_tokens"]
+
+# Columns that older ("legacy") extract_usage.py exports may not have. When
+# missing, the whole column is back-filled with a documented, safe default
+# rather than raising - build_dashboard() already treats these as optional
+# (task_summary is handled separately via a has_tasks column-presence check,
+# so it's intentionally not defaulted here).
+OPTIONAL_COLUMN_DEFAULTS = {
+    "session_id": None,
+    "reasoning_effort": "n/a",
+    "total_nano_aiu": 0.0,
+}
+
+# Numeric columns build_dashboard() reads with int()/float() - validated
+# up front so bad data produces one actionable ERROR instead of a confusing
+# ValueError/AttributeError deep inside HTML generation, or (worse) silently
+# becoming a misleading 0.
+NUMERIC_COLUMNS = ["calls", "total_tokens", "total_nano_aiu"]
+INTEGER_NUMERIC_COLUMNS = set(NUMERIC_COLUMNS)
+
+DATE_COLUMN = "date"
+
+
+def _row_numbers(df: pd.DataFrame, mask: pd.Series) -> list:
+    """Map a boolean row mask back to 1-based CSV row numbers (accounting for
+    the header row), matching what a user sees opening the file in a text
+    editor or spreadsheet app."""
+    return (df.index[mask] + 2).tolist()
+
+
+def _format_rows(rows: list, limit: int = 10) -> str:
+    shown = rows[:limit]
+    suffix = f" (+{len(rows) - limit} more)" if len(rows) > limit else ""
+    return f"{shown}{suffix}"
+
+
+def _validate_required_columns(df: pd.DataFrame, file_name: str) -> None:
+    missing = [c for c in REQUIRED_COLUMNS if c not in df.columns]
+    if missing:
+        sys.exit(
+            f"ERROR: {file_name}: missing required column(s): {', '.join(missing)}.\n"
+            f"Expected a CSV produced by extract_usage.py with at least: "
+            f"{', '.join(REQUIRED_COLUMNS)}."
+        )
+
+
+def _apply_optional_defaults(df: pd.DataFrame) -> pd.DataFrame:
+    for col, default in OPTIONAL_COLUMN_DEFAULTS.items():
+        if col not in df.columns:
+            df[col] = default
+    return df
+
+
+def _validate_numeric_column(df: pd.DataFrame, col: str, file_name: str) -> None:
+    """Reject non-numeric, NaN, infinite, negative, or fractional values in `col` -
+    these are all nonsensical for a token/call count or cost total, and
+    coercing them to 0 would silently understate usage."""
+    if col not in df.columns:
+        return
+    numeric = pd.to_numeric(df[col], errors="coerce")
+    bad_mask = ~np.isfinite(numeric.to_numpy(dtype=float)) | (numeric < 0)
+    if bad_mask.any():
+        rows = _row_numbers(df, bad_mask)
+        sys.exit(
+            f"ERROR: {file_name}: column '{col}' has invalid value(s) "
+            f"(non-numeric, NaN, infinite, or negative) at CSV row(s) {_format_rows(rows)}."
+        )
+    if col in INTEGER_NUMERIC_COLUMNS:
+        fractional_mask = numeric.mod(1).ne(0)
+        if fractional_mask.any():
+            rows = _row_numbers(df, fractional_mask)
+            sys.exit(
+                f"ERROR: {file_name}: column '{col}' has fractional value(s) at CSV "
+                f"row(s) {_format_rows(rows)}. Expected whole-number counts."
+            )
+    df[col] = numeric
+
+
+def _validate_date_column(df: pd.DataFrame, col: str, file_name: str) -> None:
+    if col not in df.columns:
+        return
+    date_text = df[col].astype("string")
+    exact_format = date_text.str.fullmatch(r"\d{4}-\d{2}-\d{2}", na=False)
+    parsed = pd.to_datetime(date_text, format="%Y-%m-%d", errors="coerce")
+    bad_mask = ~exact_format | parsed.isna()
+    if bad_mask.any():
+        rows = _row_numbers(df, bad_mask)
+        sys.exit(
+            f"ERROR: {file_name}: column '{col}' has missing/malformed date value(s) "
+            f"at CSV row(s) {_format_rows(rows)}. Expected YYYY-MM-DD (as written by "
+            f"extract_usage.py)."
+        )
+
+
+def _validate_file(df: pd.DataFrame, file_name: str) -> pd.DataFrame:
+    """Validate one loaded CSV's schema/values before it's combined with any
+    other export, so error messages can name the offending file."""
+    _validate_required_columns(df, file_name)
+    for col in NUMERIC_COLUMNS:
+        _validate_numeric_column(df, col, file_name)
+    _validate_date_column(df, DATE_COLUMN, file_name)
+    return _apply_optional_defaults(df)
 
 
 def load_data(pattern: str) -> pd.DataFrame:
     files = sorted(glob.glob(pattern))
     if not files:
         sys.exit(f"ERROR: no files matched pattern: {pattern}")
-    frames = [pd.read_csv(f) for f in files]
+
+    frames = []
+    for file_name in files:
+        try:
+            df = pd.read_csv(file_name)
+        except Exception as e:
+            sys.exit(f"ERROR: {file_name}: failed to read CSV: {e}")
+        frames.append(_validate_file(df, file_name))
+
     data = pd.concat(frames, ignore_index=True)
 
     # extract_usage.py exports a user's FULL history every run (not just new
