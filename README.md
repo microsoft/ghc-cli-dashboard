@@ -92,7 +92,13 @@ complete picture.
 2. **`dashboard.py`** reads one or many of those CSVs and renders the HTML
    dashboard: top projects/tasks, model mix, cost trend, reasoning-effort
    breakdown — with live Project/Model checkbox filters and a Tokens ↔ Cost
-   toggle.
+   toggle. Each `extract_usage.py` export contains a user's **full** history
+   (not just what's new since the last run), so re-exporting weekly and
+   globbing all `copilot_usage_*.csv` files is expected to produce
+   overlapping rows across files — `dashboard.py` automatically de-duplicates
+   on (user, session_id, date, model, reasoning_effort), keeping the most
+   recently exported copy of each row, so old exports are safe to leave in
+   place.
 
 ## Quick start
 
