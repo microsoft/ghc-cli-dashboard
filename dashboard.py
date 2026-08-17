@@ -24,8 +24,9 @@ Usage:
 import argparse
 import glob
 import json
+import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from html import escape as _esc
 
 import numpy as np
@@ -55,6 +56,35 @@ NUMERIC_COLUMNS = ["calls", "total_tokens", "total_nano_aiu"]
 INTEGER_NUMERIC_COLUMNS = set(NUMERIC_COLUMNS)
 
 DATE_COLUMN = "date"
+
+# --- Export metadata / schema-version compatibility -------------------------
+#
+# Starting with extract_usage.py's `export_format_version = "2"`, every CSV
+# row carries two extra columns: `export_format_version` (a literal version
+# string) and `exported_at` (a single, timezone-aware ISO-8601 UTC timestamp
+# shared by every row in the file, recording when that *file* was produced).
+# A CSV that has neither column is a "version 1" / legacy export - there is
+# no literal "1" ever written; version 1 is recognized purely by the absence
+# of these columns. This is intentionally lenient (old exports keep working)
+# but never silent: see _apply_export_metadata()'s docstring for the exact
+# fallback/warning policy.
+LEGACY_EXPORT_FORMAT_VERSION = "1"
+KNOWN_EXPORT_FORMAT_VERSIONS = {"1", "2"}
+
+# Columns compared for equality within a duplicate-identity group to decide
+# whether duplicate rows are genuinely identical (safe, silent dedup) or a
+# real conflict (values differ - see _resolve_duplicates()). Deliberately
+# broader than NUMERIC_COLUMNS: also includes every token sub-total and
+# `project`, per the requirement to detect conflicts in "calls, token
+# columns, cost totals, project/model/date/reasoning values" (model/date/
+# reasoning_effort are already part of the identity key itself, so a
+# mismatch there would put rows in different groups rather than showing up
+# here).
+VALUE_CONFLICT_COLUMNS = [
+    "calls", "input_tokens", "output_tokens", "cache_read_tokens",
+    "cache_write_tokens", "reasoning_tokens", "total_tokens", "total_nano_aiu",
+    "project",
+]
 
 
 def _row_numbers(df: pd.DataFrame, mask: pd.Series) -> list:
@@ -138,6 +168,216 @@ def _validate_file(df: pd.DataFrame, file_name: str) -> pd.DataFrame:
     return _apply_optional_defaults(df)
 
 
+def _file_mtime_utc(file_name: str):
+    """Best-effort proxy for "when was this file exported", used only when a
+    CSV has no usable `exported_at` column - a real (if imprecise) timestamp,
+    unlike parsing/guessing from the file name."""
+    return datetime.fromtimestamp(os.path.getmtime(file_name), tz=timezone.utc)
+
+
+def _apply_export_metadata(df: pd.DataFrame, file_name: str) -> pd.DataFrame:
+    """Normalize per-file export metadata and attach an internal, always
+    timezone-aware `_export_ts` (+ `_export_file`) column pair used purely to
+    order overlapping exports for deduplication - never exposed in the final
+    dashboard dataset (dropped again in _resolve_duplicates()).
+
+    Compatibility / fallback policy (never silent):
+      - Both `export_format_version` and `exported_at` present: the file's
+        `exported_at` values are parsed (assumed/forced to UTC) and used
+        directly as `_export_ts`.
+      - Either column missing or every `exported_at` value blank/unparseable:
+        this file predates export metadata (or is otherwise incomplete) -
+        printed as a WARNING (not a silent default), and `_export_ts` falls
+        back to the file's OS last-modified time for every row in the file.
+        `export_format_version` itself is back-filled with the legacy
+        sentinel "1" when absent.
+      - `export_format_version` present but not one of the versions this
+        tool knows about (currently {"1", "2"}): treated best-effort as
+        equivalent to the current version (whatever columns are present are
+        used), with a WARNING noting the unrecognized value.
+    """
+    has_version_col = "export_format_version" in df.columns
+    has_exported_at_col = "exported_at" in df.columns
+
+    if not has_version_col and not has_exported_at_col:
+        print(
+            f"WARNING: {file_name}: no export metadata found (missing "
+            f"'export_format_version'/'exported_at' columns) - treating as a legacy "
+            f"(pre-versioning, schema version '{LEGACY_EXPORT_FORMAT_VERSION}') export. "
+            f"Falling back to this file's OS last-modified time to order it against other "
+            f"exports for deduplication; see README's export-metadata/compatibility policy."
+        )
+        df["export_format_version"] = LEGACY_EXPORT_FORMAT_VERSION
+        df["_export_ts"] = pd.Timestamp(_file_mtime_utc(file_name))
+        df["_export_file"] = file_name
+        return df
+
+    if not has_version_col:
+        df["export_format_version"] = LEGACY_EXPORT_FORMAT_VERSION
+    else:
+        df["export_format_version"] = df["export_format_version"].astype("string").fillna(LEGACY_EXPORT_FORMAT_VERSION)
+        unknown_versions = sorted(set(df["export_format_version"]) - KNOWN_EXPORT_FORMAT_VERSIONS)
+        if unknown_versions:
+            print(
+                f"WARNING: {file_name}: unrecognized export_format_version value(s) "
+                f"{unknown_versions} (this tool knows about {sorted(KNOWN_EXPORT_FORMAT_VERSIONS)}) - "
+                f"proceeding best-effort using whichever columns are present."
+            )
+
+    if not has_exported_at_col:
+        print(
+            f"WARNING: {file_name}: has 'export_format_version' but no 'exported_at' column - "
+            f"falling back to this file's OS last-modified time to order it for deduplication."
+        )
+        df["_export_ts"] = pd.Timestamp(_file_mtime_utc(file_name))
+    else:
+        parsed = pd.to_datetime(df["exported_at"], errors="coerce", utc=True)
+        missing_mask = parsed.isna()
+        if missing_mask.any():
+            mtime = _file_mtime_utc(file_name)
+            rows = _row_numbers(df, missing_mask)
+            print(
+                f"WARNING: {file_name}: {int(missing_mask.sum())} row(s) with missing/unparseable "
+                f"'exported_at' at CSV row(s) {_format_rows(rows)} - falling back to this file's "
+                f"OS last-modified time ({mtime.isoformat()}) for those row(s)."
+            )
+            parsed = parsed.fillna(pd.Timestamp(mtime))
+        df["_export_ts"] = parsed
+
+    df["_export_file"] = file_name
+    return df
+
+
+def _resolve_duplicates(data: pd.DataFrame) -> pd.DataFrame:
+    """Deduplicate rows from overlapping exports using each row's actual
+    export timestamp (`_export_ts`, from `_apply_export_metadata`) rather
+    than filename sort order.
+
+    Identity policy:
+      - Rows with a non-null `session_id` are identified by
+        (user, session_id, date, model, reasoning_effort). `session_id` is
+        assumed unique per underlying Copilot CLI session, so two rows
+        sharing this key are, with high confidence, the same underlying
+        record captured by different exports.
+      - Rows with a null/missing `session_id` ("legacy" rows - current
+        extract_usage.py always sets it) are identified instead by
+        (user, project, date, model, reasoning_effort). This key is only
+        *inferred* identity: two legacy rows can share it by coincidence
+        rather than truly being the same session, so it is deliberately
+        NOT treated with the same confidence as the session_id key (this
+        is why `project` is part of the legacy key, unlike the session_id
+        key - session_id already uniquely pins a session's project).
+
+    Resolution per identity group with 2+ rows:
+      - Every VALUE_CONFLICT_COLUMNS-listed column identical across the
+        group => same record, duplicated across exports. Keep exactly one:
+        the row with the greatest `_export_ts`. Ties (identical timestamps,
+        e.g. two files from the same run or clock-resolution collisions)
+        are broken deterministically by `_export_file` - the
+        lexicographically greatest file name wins; this (and NOT relying on
+        it for anything else) is the one documented, narrow use of file
+        name as a tiebreaker.
+      - Values differ AND identity is session_id-based: a genuine conflict
+        about the same entity (e.g. a later export captured more calls for
+        that session/day). The row with the greatest `_export_ts` (same
+        tie-break) wins, and a WARNING names the file/key context and which
+        row won - conflicts are reported, never silently hidden.
+      - Values differ AND identity is the inferred legacy key: we cannot
+        safely tell whether this is a real update to the same session or a
+        coincidental collision between two unrelated legacy sessions. ALL
+        rows in the group are retained (nothing dropped), and a WARNING
+        flags the ambiguity so it can be investigated (e.g. by re-exporting
+        with a current extract_usage.py that includes session_id).
+    """
+    data = data.reset_index(drop=True)
+    has_session = data["session_id"].notna() if "session_id" in data.columns else pd.Series(False, index=data.index)
+
+    def _key_part(col):
+        if col not in data.columns:
+            return pd.Series("", index=data.index)
+        return data[col].astype("string").fillna("\u0000")
+
+    sid_key = (
+        "sid\u241f" + _key_part("user") + "\u241f" + _key_part("session_id") + "\u241f"
+        + _key_part("date") + "\u241f" + _key_part("model") + "\u241f" + _key_part("reasoning_effort")
+    )
+    legacy_key = (
+        "legacy\u241f" + _key_part("user") + "\u241f" + _key_part("project") + "\u241f"
+        + _key_part("date") + "\u241f" + _key_part("model") + "\u241f" + _key_part("reasoning_effort")
+    )
+    data["_identity_key"] = np.where(has_session, sid_key, legacy_key)
+
+    value_cols = [c for c in VALUE_CONFLICT_COLUMNS if c in data.columns]
+
+    keep_mask = pd.Series(True, index=data.index)
+    removed = 0
+    conflict_notes = []
+    ambiguous_notes = []
+
+    for key, group in data.groupby("_identity_key", sort=False):
+        if len(group) < 2:
+            continue
+
+        identical = True
+        if value_cols:
+            identical = bool((group[value_cols].nunique(dropna=False) <= 1).all())
+
+        if identical:
+            ordered = group.sort_values(["_export_ts", "_export_file"])
+            winner = ordered.index[-1]
+            drop_idx = [i for i in group.index if i != winner]
+            keep_mask.loc[drop_idx] = False
+            removed += len(drop_idx)
+            continue
+
+        files_involved = sorted(set(group["_export_file"]))
+        if key.startswith("sid\u241f"):
+            ordered = group.sort_values(["_export_ts", "_export_file"])
+            winner_idx = ordered.index[-1]
+            drop_idx = [i for i in group.index if i != winner_idx]
+            keep_mask.loc[drop_idx] = False
+            removed += len(drop_idx)
+            winner = data.loc[winner_idx]
+            conflict_notes.append(
+                f"  - user={winner.get('user')} session_id={winner.get('session_id')} "
+                f"date={winner.get('date')} model={winner.get('model')} "
+                f"reasoning_effort={winner.get('reasoning_effort')}: {len(group)} row(s) with "
+                f"differing values across file(s) {files_involved}; kept the row from "
+                f"'{winner['_export_file']}' (exported_at={winner['_export_ts']})."
+            )
+        else:
+            sample = group.iloc[0]
+            ambiguous_notes.append(
+                f"  - user={sample.get('user')} project={sample.get('project')} "
+                f"date={sample.get('date')} model={sample.get('model')} "
+                f"reasoning_effort={sample.get('reasoning_effort')}: {len(group)} row(s) share this "
+                f"inferred (no session_id) identity across file(s) {files_involved} but have "
+                f"differing values - cannot safely tell whether this is the same session re-exported "
+                f"or a coincidental collision, so ALL {len(group)} row(s) were KEPT (none dropped)."
+            )
+
+    if conflict_notes:
+        print(
+            "WARNING: resolved conflicting duplicate row(s) sharing the same session_id-based "
+            "identity (kept the most recently exported row per key, per file exported_at):\n"
+            + "\n".join(conflict_notes)
+        )
+    if ambiguous_notes:
+        print(
+            "WARNING: found row(s) sharing an inferred (legacy, no session_id) identity with "
+            "differing values - retained ALL of them rather than guessing which is correct:\n"
+            + "\n".join(ambiguous_notes)
+        )
+
+    result = data.loc[keep_mask].drop(columns=["_identity_key", "_export_ts", "_export_file"]).reset_index(drop=True)
+    if removed:
+        print(
+            f"Note: removed {removed} duplicate row(s) found across overlapping exports "
+            f"(kept the copy with the greatest exported_at)."
+        )
+    return result
+
+
 def load_data(pattern: str) -> pd.DataFrame:
     files = sorted(glob.glob(pattern))
     if not files:
@@ -149,25 +389,20 @@ def load_data(pattern: str) -> pd.DataFrame:
             df = pd.read_csv(file_name)
         except Exception as e:
             sys.exit(f"ERROR: {file_name}: failed to read CSV: {e}")
-        frames.append(_validate_file(df, file_name))
+        df = _validate_file(df, file_name)
+        df = _apply_export_metadata(df, file_name)
+        frames.append(df)
 
     data = pd.concat(frames, ignore_index=True)
 
     # extract_usage.py exports a user's FULL history every run (not just new
     # rows), so overlapping exports (e.g. a weekly re-export) are common when
-    # multiple copilot_usage_*.csv files are globbed together. Each row is
-    # uniquely identified by (user, session_id, date, model, reasoning_effort)
-    # per extract_usage.py's own GROUP BY - dedupe on that key, keeping the
-    # last occurrence so the most recently-exported (most complete/accurate)
-    # copy of a row wins. Files were sorted above, so for a given user, later
-    # files (later export dates) are concatenated later and win ties.
-    dedup_cols = [c for c in ("user", "session_id", "date", "model", "reasoning_effort") if c in data.columns]
-    if dedup_cols:
-        before = len(data)
-        data = data.drop_duplicates(subset=dedup_cols, keep="last").reset_index(drop=True)
-        removed = before - len(data)
-        if removed:
-            print(f"Note: removed {removed} duplicate row(s) found across overlapping exports (kept most recent).")
+    # multiple copilot_usage_*.csv files are globbed together. Resolve those
+    # overlaps deterministically using each row's actual export timestamp -
+    # see _resolve_duplicates()'s docstring for the full identity/conflict
+    # policy (files are sorted above only for stable read order/error
+    # messages, NOT to decide which duplicate wins).
+    data = _resolve_duplicates(data)
 
     return data
 

@@ -115,16 +115,25 @@ complete picture.
      script expects (e.g. an incompatible Copilot CLI version), it exits
      with an `ERROR:` message naming the missing table(s)/column(s) instead
      of a raw SQLite exception.
+   - **Export metadata / schema version:** every row also carries
+     `export_format_version` and `exported_at`. `export_format_version` is a
+     single, monotonically increasing integer string (currently `"2"`) that
+     identifies the *shape* of the CSV — it's bumped whenever a change would
+     matter to a consumer doing cross-export deduplication or column
+     presence checks (this is a plain integer, not semver, since
+     `extract_usage.py` is the format's only writer). `exported_at` is one
+     timezone-aware ISO-8601 UTC timestamp, shared by every row in the file,
+     recording when *that run* of `extract_usage.py` produced the file (not
+     when any individual usage event happened). `dashboard.py` uses
+     `exported_at` — not the file name — to resolve rows that appear in more
+     than one overlapping export.
 2. **`dashboard.py`** reads one or many of those CSVs and renders the HTML
    dashboard: top projects/tasks, model mix, cost trend, reasoning-effort
    breakdown — with live Project/Model checkbox filters and a Tokens ↔ Cost
    toggle. Each `extract_usage.py` export contains a user's **full** history
    (not just what's new since the last run), so re-exporting weekly and
    globbing all `copilot_usage_*.csv` files is expected to produce
-   overlapping rows across files — `dashboard.py` automatically de-duplicates
-   on (user, session_id, date, model, reasoning_effort), keeping the most
-   recently exported copy of each row, so old exports are safe to leave in
-   place.
+   overlapping rows across files.
    - **Input validation:** each CSV is checked before use. Required columns
      — `user`, `date`, `project`, `model`, `calls`, `total_tokens` — must be
      present or the file is rejected with an `ERROR:` naming the file and
@@ -137,6 +146,54 @@ complete picture.
      valid date — invalid values are rejected with an `ERROR:` naming the
      file, column, and CSV row number(s), rather than being silently
      coerced to a misleading `0`.
+   - **Legacy (pre-metadata) compatibility policy:** a CSV missing both
+     `export_format_version` and `exported_at` is treated as schema
+     "version 1" (there is no literal `"1"` ever written — version 1 is
+     recognized purely by the *absence* of these columns) and is still
+     loaded, but never silently: a `WARNING:` is printed naming the file and
+     stating that it's being treated as legacy. Since a legacy file has no
+     real export timestamp, `dashboard.py` falls back to that **file's OS
+     last-modified time** to order it against other exports — a best-effort
+     approximation (a copied/re-saved file's mtime may not match its true
+     original export time), also always accompanied by a `WARNING:`. A CSV
+     with an `export_format_version` value this tool doesn't recognize
+     (i.e. not `"1"` or `"2"`) is still loaded best-effort, with a
+     `WARNING:` about the unrecognized version.
+   - **Deduplication policy (deterministic, timestamp-based):** overlapping
+     exports are resolved using each row's actual `exported_at` (or the
+     mtime fallback above) — **not** file name sort order. Rows are grouped
+     by identity:
+     - Rows with a `session_id` are identified by
+       `(user, session_id, date, model, reasoning_effort)` — `session_id` is
+       assumed unique per Copilot CLI session, so this is a high-confidence
+       identity.
+     - Rows without a `session_id` ("legacy" rows) are identified instead by
+       `(user, project, date, model, reasoning_effort)` — only an *inferred*
+       identity, since two unrelated legacy sessions could coincidentally
+       share this key.
+
+     Within each identity group with more than one row:
+     - If every aggregated value (`calls`, the token columns, `total_nano_aiu`,
+       and `project`) is identical across the group, the rows are the same
+       record duplicated across exports: exactly one is kept — the row with
+       the **greatest `exported_at`**. An exact tie (identical timestamps,
+       e.g. two files from the same run) is broken **deterministically by
+       source file name**: the lexicographically **greatest** file name
+       wins. This is documented, narrow use of file name only as a
+       last-resort tiebreaker, never as the primary ordering.
+     - If the values differ **and** the identity is `session_id`-based, this
+       is a genuine conflict for the same entity (e.g. a later export
+       captured more calls for that session/day). The row with the greatest
+       `exported_at` (same tiebreak) wins, and a `WARNING:` is printed
+       naming the conflicting file(s), the identity key, and which row won
+       — conflicts are always reported, never silently hidden.
+     - If the values differ **and** the identity is the inferred legacy
+       key, `dashboard.py` cannot safely tell whether this is a real update
+       to the same session or a coincidental collision between two
+       unrelated legacy sessions. Per policy, **all** rows in the group are
+       retained (nothing is dropped), and a `WARNING:` flags the ambiguity
+       so it can be investigated — e.g. by re-exporting with a current
+       `extract_usage.py`, which always includes `session_id`.
 
 ## Privacy notes on the generated HTML
 
@@ -412,7 +469,13 @@ formula-injection neutralization in the "Copy table" TSV clipboard text —
 and the build-time redaction flags (`--exclude-project`,
 `--omit-task-summaries`), including hostile/unusual project names,
 `--exclude-default` overlap, unmatched-exclusion warnings, and the
-all-rows-excluded error.
+all-rows-excluded error. It also covers CSV schema/value validation, and
+export metadata / deduplication: `export_format_version`/`exported_at`
+emission and parsing, newest-`exported_at`-wins ordering, deterministic
+same-timestamp tie-breaking, legacy (pre-metadata) fallback warnings, and
+the safe-dedup vs. ambiguous-and-retained handling of legacy rows without
+`session_id` (see `tests/test_export_metadata.py` and
+`tests/test_dashboard_dedup.py`).
 
 ```powershell
 pip install -r requirements.txt -r requirements-dev.txt
