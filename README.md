@@ -65,8 +65,13 @@ complete picture.
   ~5,300 usage rows spanning that install's full history — there is
   **no guarantee this schema is stable across CLI versions**, and a future
   update could silently change or remove fields this tool depends on
-  (`assistant_usage_events`, `total_nano_aiu`, etc.). Treat this as a
-  best-effort community tool, not an officially supported one.
+  (`assistant_usage_events`, `total_nano_aiu`, etc.). `extract_usage.py`
+  validates that the required tables/columns exist before querying and
+  exits with a concise `ERROR:` message naming exactly what's missing if
+  they don't (instead of a raw `sqlite3` traceback), but it can only detect
+  *absence* — a schema change that silently repurposes an existing
+  column's meaning wouldn't be caught. Treat this as a best-effort
+  community tool, not an officially supported one.
 - **macOS/Linux are untested** — the code is written to be portable
   (standard `~/.copilot` path, plain SQLite), but has only actually been
   run on Windows so far.
@@ -88,8 +93,8 @@ complete picture.
 
 ## How it works
 
-1. **`extract_usage.py`** reads `~/.copilot/session-store.db` (a safe
-   read-only copy — never touches or locks the live DB) and writes a
+1. **`extract_usage.py`** reads `~/.copilot/session-store.db` through a
+   read-only, point-in-time snapshot (see below) and writes a
    privacy-reduced CSV: one row per session/model/day/reasoning-effort, with
    token and cost totals. Local folder paths are reduced to just the repo
    name or last folder name, so exports don't leak your full local directory
@@ -97,6 +102,19 @@ complete picture.
    still contains your username/label, project and model names, and
    (with `--include-task-summary`) free-text task summaries; review its
    contents before sharing it anywhere.
+   - **Temporary snapshot handling:** rather than copying the DB file (plus
+     its `-wal`/`-shm` sidecars) directly — which can produce a torn,
+     inconsistent copy if Copilot CLI is writing to it at the same time —
+     `extract_usage.py` uses SQLite's online backup API to take a single,
+     transactionally-consistent snapshot into a temporary file, opened
+     read-only, and never locks or writes to the live database. The
+     temporary snapshot (and its directory) is always deleted afterward,
+     both on success and if extraction fails partway through.
+   - **Schema validation:** before querying, the required tables/columns are
+     checked; if the local `session-store.db` doesn't match what this
+     script expects (e.g. an incompatible Copilot CLI version), it exits
+     with an `ERROR:` message naming the missing table(s)/column(s) instead
+     of a raw SQLite exception.
 2. **`dashboard.py`** reads one or many of those CSVs and renders the HTML
    dashboard: top projects/tasks, model mix, cost trend, reasoning-effort
    breakdown — with live Project/Model checkbox filters and a Tokens ↔ Cost
@@ -107,6 +125,18 @@ complete picture.
    on (user, session_id, date, model, reasoning_effort), keeping the most
    recently exported copy of each row, so old exports are safe to leave in
    place.
+   - **Input validation:** each CSV is checked before use. Required columns
+     — `user`, `date`, `project`, `model`, `calls`, `total_tokens` — must be
+     present or the file is rejected with an `ERROR:` naming the file and
+     the missing column(s). Older exports missing optional columns
+     (`session_id`, `reasoning_effort`, `total_nano_aiu`) are still
+     accepted; each missing optional column is back-filled with a
+     documented default (`None`, `"n/a"`, `0.0` respectively) rather than
+     raising. `calls`, `total_tokens`, and `total_nano_aiu` (when present)
+     must be finite, non-negative numbers, and `date` must parse as a
+     valid date — invalid values are rejected with an `ERROR:` naming the
+     file, column, and CSV row number(s), rather than being silently
+     coerced to a misleading `0`.
 
 ## Privacy notes on the generated HTML
 
