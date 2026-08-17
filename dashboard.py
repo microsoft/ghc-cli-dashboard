@@ -31,6 +31,23 @@ def load_data(pattern: str) -> pd.DataFrame:
         sys.exit(f"ERROR: no files matched pattern: {pattern}")
     frames = [pd.read_csv(f) for f in files]
     data = pd.concat(frames, ignore_index=True)
+
+    # extract_usage.py exports a user's FULL history every run (not just new
+    # rows), so overlapping exports (e.g. a weekly re-export) are common when
+    # multiple copilot_usage_*.csv files are globbed together. Each row is
+    # uniquely identified by (user, session_id, date, model, reasoning_effort)
+    # per extract_usage.py's own GROUP BY - dedupe on that key, keeping the
+    # last occurrence so the most recently-exported (most complete/accurate)
+    # copy of a row wins. Files were sorted above, so for a given user, later
+    # files (later export dates) are concatenated later and win ties.
+    dedup_cols = [c for c in ("user", "session_id", "date", "model", "reasoning_effort") if c in data.columns]
+    if dedup_cols:
+        before = len(data)
+        data = data.drop_duplicates(subset=dedup_cols, keep="last").reset_index(drop=True)
+        removed = before - len(data)
+        if removed:
+            print(f"Note: removed {removed} duplicate row(s) found across overlapping exports (kept most recent).")
+
     return data
 
 
