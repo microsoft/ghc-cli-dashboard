@@ -34,6 +34,33 @@ import tempfile
 from datetime import datetime, timezone
 
 
+# Export schema/versioning convention
+# ------------------------------------
+# `export_format_version` is a simple, monotonically increasing integer
+# (as a string, e.g. "2") identifying the *shape* of a copilot_usage_*.csv
+# file - bump it whenever a change would matter to a consumer doing
+# cross-export deduplication or column presence checks (adding/removing/
+# renaming a column, changing a column's meaning, or changing the
+# aggregation grain). It is NOT semver: there is exactly one integer, no
+# minor/patch component, because this is an internal, single-producer
+# export format (extract_usage.py is the only writer) rather than a public
+# API with independent minor/patch compatibility concerns.
+#
+#   version 1 (implicit/legacy): the original schema, before this field
+#     existed. Recognized by dashboard.py by the *absence* of the
+#     `export_format_version` (and `exported_at`) column(s) - there is no
+#     literal "1" ever written to a CSV.
+#   version 2 (current): adds two columns to every row: `export_format_version`
+#     (this literal, as a string) and `exported_at` (a single, timezone-aware
+#     ISO-8601 UTC timestamp shared by every row in the file, recording when
+#     *this run* of extract_usage.py produced the file - not when any
+#     individual usage event happened). dashboard.py uses `exported_at` to
+#     deterministically resolve overlapping/duplicate rows across multiple
+#     exports (see dashboard.py's dedup policy), instead of relying on
+#     filename sort order.
+EXPORT_FORMAT_VERSION = "2"
+
+
 def default_db_path() -> str:
     home = os.path.expanduser("~")
     return os.path.join(home, ".copilot", "session-store.db")
@@ -216,11 +243,20 @@ def main():
 
     out_path = args.out or f"copilot_usage_{user_label}_{datetime.now().strftime('%Y-%m-%d')}.csv"
 
+    # A single, timezone-aware timestamp for *this run* - the same value is
+    # written into every row of the file, so dashboard.py can treat it as
+    # "when was this file exported" for deterministic dedup ordering across
+    # overlapping exports (see README/export_format_version comment above).
+    # timezone.utc (rather than the naive local time datetime.now() used for
+    # the default filename above) guarantees the value is unambiguous and
+    # comparable across machines/timezones.
+    exported_at = datetime.now(timezone.utc).isoformat()
+
     import csv
     out_cols = [
         "user", "date", "project", "model", "reasoning_effort", "calls",
         "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens",
-        "total_tokens", "total_nano_aiu", "session_id",
+        "total_tokens", "total_nano_aiu", "session_id", "export_format_version", "exported_at",
     ]
     if args.include_task_summary:
         out_cols.insert(5, "task_summary")
@@ -248,6 +284,8 @@ def main():
                 "total_tokens": input_tokens + output_tokens,
                 "total_nano_aiu": r[idx["total_nano_aiu"]] or 0,
                 "session_id": r[idx["session_id"]],
+                "export_format_version": EXPORT_FORMAT_VERSION,
+                "exported_at": exported_at,
             }
             if args.include_task_summary:
                 rec["task_summary"] = r[idx["task_summary"]] or ""
