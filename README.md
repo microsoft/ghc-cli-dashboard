@@ -178,8 +178,10 @@ complete picture.
        record duplicated across exports: exactly one is kept — the row with
        the **greatest `exported_at`**. An exact tie (identical timestamps,
        e.g. two files from the same run) is broken **deterministically by
-       source file name**: the lexicographically **greatest** file name
-       wins. This is documented, narrow use of file name only as a
+       source file name (basename only, not the full path)**: the
+       lexicographically **greatest** file name wins, so the same file name
+       ties the same way regardless of which directory it was passed in
+       from. This is documented, narrow use of file name only as a
        last-resort tiebreaker, never as the primary ordering.
      - If the values differ **and** the identity is `session_id`-based, this
        is a genuine conflict for the same entity (e.g. a later export

@@ -112,6 +112,34 @@ def test_same_timestamp_tie_is_stable_regardless_of_read_order(tmp_path):
     assert data.iloc[0]["calls"] == 2
 
 
+def test_same_timestamp_tie_uses_basename_not_full_directory_path(tmp_path):
+    same_ts = "2026-01-10T00:00:00+00:00"
+    # Two different directories, deliberately chosen so full-path ordering
+    # and file-*name*-only ordering disagree: "dir_a" < "dir_b" so the
+    # full path "dir_a/zzz.csv" sorts BEFORE "dir_b/aaa.csv" (i.e.
+    # "dir_b/aaa.csv" would be the lexicographically GREATEST full path),
+    # while the basenames sort the opposite way ("zzz.csv" > "aaa.csv").
+    row_in_dir_a_zzz = _row(calls=1, total_tokens=100, exported_at=same_ts)
+    row_in_dir_b_aaa = _row(calls=2, total_tokens=200, exported_at=same_ts)
+
+    dir_a = tmp_path / "dir_a"
+    dir_b = tmp_path / "dir_b"
+    dir_a.mkdir()
+    dir_b.mkdir()
+    _write_csv(dir_a / "zzz.csv", [row_in_dir_a_zzz])
+    _write_csv(dir_b / "aaa.csv", [row_in_dir_b_aaa])
+
+    data = dashboard.load_data(str(tmp_path / "*" / "*.csv"))
+    assert len(data) == 1
+    # Per the documented (and now enforced) policy, the tie-break is by
+    # file NAME only (Path(file_name).name), never the full path. If the
+    # full path were compared instead, "dir_b/aaa.csv" would sort greatest
+    # and calls=2 would win; here "zzz.csv" > "aaa.csv" by basename, so
+    # calls=1 (from dir_a/zzz.csv) must win regardless of which directory
+    # it came from.
+    assert data.iloc[0]["calls"] == 1
+
+
 # ---------------------------------------------------------------------------
 # Safe legacy (no session_id) dedup: identical values -> silent dedup
 # ---------------------------------------------------------------------------

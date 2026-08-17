@@ -28,6 +28,7 @@ import os
 import sys
 from datetime import datetime, timezone
 from html import escape as _esc
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -177,9 +178,15 @@ def _file_mtime_utc(file_name: str):
 
 def _apply_export_metadata(df: pd.DataFrame, file_name: str) -> pd.DataFrame:
     """Normalize per-file export metadata and attach an internal, always
-    timezone-aware `_export_ts` (+ `_export_file`) column pair used purely to
-    order overlapping exports for deduplication - never exposed in the final
-    dashboard dataset (dropped again in _resolve_duplicates()).
+    timezone-aware `_export_ts` (+ `_export_file`/`_export_file_basename`)
+    column set used purely to order overlapping exports for deduplication -
+    never exposed in the final dashboard dataset (dropped again in
+    _resolve_duplicates()). `_export_file` keeps the full path/argument as
+    given (useful in WARNING messages to locate the file); the same-timestamp
+    tiebreak itself uses only `_export_file_basename` (`Path(file_name).name`)
+    so it's based on the file *name*, per the documented policy, and doesn't
+    depend on which directory (or how it was spelled on the command line) a
+    file was passed from.
 
     Compatibility / fallback policy (never silent):
       - Both `export_format_version` and `exported_at` present: the file's
@@ -210,6 +217,7 @@ def _apply_export_metadata(df: pd.DataFrame, file_name: str) -> pd.DataFrame:
         df["export_format_version"] = LEGACY_EXPORT_FORMAT_VERSION
         df["_export_ts"] = pd.Timestamp(_file_mtime_utc(file_name))
         df["_export_file"] = file_name
+        df["_export_file_basename"] = Path(file_name).name
         return df
 
     if not has_version_col:
@@ -245,6 +253,7 @@ def _apply_export_metadata(df: pd.DataFrame, file_name: str) -> pd.DataFrame:
         df["_export_ts"] = parsed
 
     df["_export_file"] = file_name
+    df["_export_file_basename"] = Path(file_name).name
     return df
 
 
@@ -299,10 +308,12 @@ def _resolve_duplicates(data: pd.DataFrame) -> pd.DataFrame:
         group => same record, duplicated across exports. Keep exactly one:
         the row with the greatest `_export_ts`. Ties (identical timestamps,
         e.g. two files from the same run or clock-resolution collisions)
-        are broken deterministically by `_export_file` - the
-        lexicographically greatest file name wins; this (and NOT relying on
-        it for anything else) is the one documented, narrow use of file
-        name as a tiebreaker.
+        are broken deterministically by `_export_file_basename` - the
+        lexicographically greatest file *name* (not full path - so the
+        tiebreak is stable regardless of which directory a same-named file
+        was passed in from) wins; this (and NOT relying on it for anything
+        else) is the one documented, narrow use of file name as a
+        tiebreaker.
       - Values differ AND identity is session_id-based (including a
         folded-in legacy row): a genuine conflict about the same entity
         (e.g. a later export captured more calls for that session/day, or
@@ -400,7 +411,7 @@ def _resolve_duplicates(data: pd.DataFrame) -> pd.DataFrame:
     # a true current (session_id-bearing) row, the current row must win
     # regardless of exported_at ordering ("the newest trusted/current row
     # wins" - current format is trusted over legacy by policy, not just by
-    # timestamp). Sorting on this first, before _export_ts/_export_file,
+    # timestamp). Sorting on this first, before _export_ts/_export_file_basename,
     # makes the existing "take the last row" winner logic do that for free;
     # it's a no-op for groups that are purely legacy or purely current
     # (constant value within the group).
@@ -420,7 +431,7 @@ def _resolve_duplicates(data: pd.DataFrame) -> pd.DataFrame:
             identical = bool((group[value_cols].nunique(dropna=False) <= 1).all())
 
         if identical:
-            ordered = group.sort_values(["_is_current", "_export_ts", "_export_file"])
+            ordered = group.sort_values(["_is_current", "_export_ts", "_export_file_basename"])
             winner = ordered.index[-1]
             drop_idx = [i for i in group.index if i != winner]
             keep_mask.loc[drop_idx] = False
@@ -429,7 +440,7 @@ def _resolve_duplicates(data: pd.DataFrame) -> pd.DataFrame:
 
         files_involved = sorted(set(group["_export_file"]))
         if key.startswith("sid\u241f"):
-            ordered = group.sort_values(["_is_current", "_export_ts", "_export_file"])
+            ordered = group.sort_values(["_is_current", "_export_ts", "_export_file_basename"])
             winner_idx = ordered.index[-1]
             drop_idx = [i for i in group.index if i != winner_idx]
             keep_mask.loc[drop_idx] = False
@@ -475,7 +486,7 @@ def _resolve_duplicates(data: pd.DataFrame) -> pd.DataFrame:
 
     result = (
         data.loc[keep_mask]
-        .drop(columns=["_identity_key", "_dim_key", "_is_current", "_export_ts", "_export_file"])
+        .drop(columns=["_identity_key", "_dim_key", "_is_current", "_export_ts", "_export_file", "_export_file_basename"])
         .reset_index(drop=True)
     )
     if removed:
