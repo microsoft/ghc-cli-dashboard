@@ -8,16 +8,18 @@ emailed, posted to Teams/SharePoint, or opened by anyone with zero installs -
 no server, no Streamlit, no Python needed to VIEW it (only to generate it).
 Project AND model checkboxes let you exclude either from every chart; your
 choices are remembered per-browser via localStorage. Note: unchecking a
-project/model only hides it from the current browser's view - the excluded
-rows are still present in the generated HTML file itself (see README for
-details; build-time redaction is a planned future improvement, not yet
-implemented). Charts show on-chart value labels (compact, e.g. "154.9M") so
-you don't need to hover to read them.
+project/model (or using --exclude-default) only hides it from the current
+browser's view - those rows are still present in the generated HTML file
+itself. To actually remove data before the file is written, use the
+build-time flags --exclude-project (repeatable, exact project name) and/or
+--omit-task-summaries (see README for details). Charts show on-chart value
+labels (compact, e.g. "154.9M") so you don't need to hover to read them.
 
 Usage:
     python dashboard.py --in "copilot_usage_*.csv" --out usage_dashboard.html
     python dashboard.py --in "\\\\shared\\team-folder\\copilot_usage_*.csv"
     python dashboard.py --in "copilot_usage_*.csv" --exclude-default "Music,D:"
+    python dashboard.py --in "copilot_usage_*.csv" --exclude-project "Personal Project" --omit-task-summaries
 """
 import argparse
 import glob
@@ -201,9 +203,72 @@ def _checkbox_items(order, totals, css_class):
     )
 
 
+def _redact_projects(data: pd.DataFrame, exclude_projects: list, exclude_default_projects: list):
+    """Permanently drop rows for exact project names *before* any derived
+    output (project/model orders, totals, RAW JSON, checkboxes, insights) is
+    computed - unlike --exclude-default (a browser-display-only default),
+    matching rows never reach the generated HTML at all, so they can't be
+    recovered by unchecking a box or reading the file's source.
+
+    Also purges the same names from `exclude_default_projects` so an
+    excluded project can't be re-embedded via the DEFAULT_EXCLUDED_PROJECTS
+    localStorage seed even if it was also passed to --exclude-default.
+
+    Returns (data, exclude_default_projects) - both possibly narrowed/copied.
+    """
+    if not exclude_projects:
+        return data, exclude_default_projects
+
+    exclude_set = set(exclude_projects)
+    present_projects = set(data["project"].unique())
+    matched = sorted(exclude_set & present_projects)
+    unmatched = sorted(exclude_set - present_projects)
+
+    if unmatched:
+        print(
+            f"WARNING: --exclude-project name(s) not found in the dataset (no rows removed for "
+            f"these - check for typos/whitespace/case): {unmatched}"
+        )
+
+    mask = data["project"].isin(exclude_set)
+    removed_rows = int(mask.sum())
+    data = data.loc[~mask].reset_index(drop=True)
+
+    if removed_rows:
+        print(
+            f"Redacted {removed_rows} row(s) across {len(matched)} project(s) via --exclude-project "
+            f"(removed before build; not recoverable in the output file): {matched}"
+        )
+    elif not unmatched:
+        # exclude_projects was non-empty but somehow neither matched nor unmatched
+        # (e.g. an empty/blank string slipped through) - still surface it.
+        print("WARNING: --exclude-project matched 0 rows; the dataset was not modified.")
+
+    exclude_default_projects = [p for p in exclude_default_projects if p not in exclude_set]
+
+    if data.empty:
+        sys.exit(
+            "ERROR: --exclude-project removed every row from the dataset - nothing left to build a "
+            "dashboard from. Check the project name(s) passed to --exclude-project."
+        )
+
+    return data, exclude_default_projects
+
+
 def build_dashboard(data: pd.DataFrame, out_path: str, title: str,
                      exclude_default_projects: list, exclude_default_models: list,
-                     storage_key: str):
+                     storage_key: str, exclude_projects: list = None,
+                     omit_task_summaries: bool = False):
+    data, exclude_default_projects = _redact_projects(data, exclude_projects or [], exclude_default_projects)
+
+    if omit_task_summaries and "task_summary" in data.columns:
+        data = data.drop(columns=["task_summary"])
+        print(
+            "Task summaries omitted from build (--omit-task-summaries): the task_summary column "
+            "was removed before the dashboard was generated - Work Patterns/Task Detail will show "
+            "their existing no-summary state."
+        )
+
     has_tasks = "task_summary" in data.columns
     has_effort = "reasoning_effort" in data.columns
 
@@ -1212,12 +1277,30 @@ def main():
     ap.add_argument("--title", default="Copilot CLI Token Usage Dashboard", help="Dashboard title")
     ap.add_argument("--exclude-default", default="", help="Comma-separated project names unchecked by default on first load (only applies until you toggle checkboxes yourself, then your browser's choice takes over)")
     ap.add_argument("--exclude-default-models", default="", help="Comma-separated model names unchecked by default on first load")
+    ap.add_argument(
+        "--exclude-project", dest="exclude_projects", action="append", metavar="PROJECT", default=None,
+        help="Exact project name to permanently remove from the dataset BEFORE the dashboard is "
+             "built (repeatable, e.g. --exclude-project Foo --exclude-project 'Bar, Inc'). Unlike "
+             "--exclude-default, this is irreversible build-time redaction: matching rows are "
+             "dropped before totals/orders/RAW JSON/checkboxes/insights are computed, so they never "
+             "reach the output file and can't be un-hidden in the browser. Use this when sharing a "
+             "dashboard with people who shouldn't see certain projects at all.",
+    )
+    ap.add_argument(
+        "--omit-task-summaries", action="store_true",
+        help="Strip all task-summary text from the dataset BEFORE the dashboard is built "
+             "(irreversible). Work Patterns and Task Detail will show their existing "
+             "no-summaries-available state instead of embedding any task_summary values.",
+    )
     args = ap.parse_args()
 
     data = load_data(args.pattern)
     exclude_default_projects = [p.strip() for p in args.exclude_default.split(",") if p.strip()]
     exclude_default_models = [m.strip() for m in args.exclude_default_models.split(",") if m.strip()]
-    build_dashboard(data, args.out, args.title, exclude_default_projects, exclude_default_models, storage_key=args.out)
+    build_dashboard(
+        data, args.out, args.title, exclude_default_projects, exclude_default_models, storage_key=args.out,
+        exclude_projects=args.exclude_projects, omit_task_summaries=args.omit_task_summaries,
+    )
 
 
 if __name__ == "__main__":
