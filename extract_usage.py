@@ -51,22 +51,129 @@ def normalize_project(repository, cwd):
     return "(unknown)"
 
 
-def open_readonly_copy(db_path: str) -> sqlite3.Connection:
-    """Copy the DB (plus its WAL/SHM sidecars) to a temp location and open
-    read-only, so we never lock or interfere with a running Copilot CLI."""
-    if not os.path.exists(db_path):
-        sys.exit(f"ERROR: database not found at {db_path}")
+class ReadOnlySnapshot:
+    """Context manager that takes a consistent, point-in-time snapshot of
+    ``db_path`` into a fresh temporary database file, opens it read-only, and
+    guarantees cleanup of both the open connection and the temporary
+    DB/WAL/SHM files on *every* exit path (normal completion, ``sys.exit``,
+    or any other exception raised while the snapshot is in use).
 
-    tmp_dir = tempfile.mkdtemp(prefix="copilot_usage_")
-    tmp_db = os.path.join(tmp_dir, "session-store.db")
-    shutil.copy2(db_path, tmp_db)
-    for suffix in ("-wal", "-shm"):
-        side = db_path + suffix
-        if os.path.exists(side):
-            shutil.copy2(side, tmp_db + suffix)
+    Why a backup-API snapshot instead of copying the file (+ its -wal/-shm
+    sidecars) directly: Copilot CLI keeps ``session-store.db`` open in WAL
+    mode while it runs, so a plain ``shutil.copy2`` of the three files taken
+    while the CLI is mid-write can copy them out of sync with each other
+    (a "torn" copy) - e.g. the main file copied before a checkpoint but the
+    -wal copied after, or a write landing between the three copies. SQLite's
+    ``Connection.backup()`` instead reads through SQLite's own machinery
+    under a read lock, at a single consistent point in time, and is safe to
+    run concurrently with another process (a live ``copilot`` process)
+    writing new usage events - we only ever open the source database
+    read-only, so we never lock or interfere with it. The tradeoff is a
+    couple of extra SQLite connections and a full-database read during the
+    backup step; for the local session-store.db sizes this tool targets,
+    that's negligible next to the correctness benefit.
 
-    conn = sqlite3.connect(f"file:{tmp_db}?mode=ro", uri=True)
-    return conn
+    The connection returned by ``__enter__`` MUST NOT be used after the
+    ``with`` block exits - ``__exit__`` closes it and deletes the temporary
+    snapshot directory, in that order, so nothing can outlive its cleanup.
+    """
+
+    def __init__(self, db_path: str):
+        self.db_path = db_path
+        self._tmp_dir = None
+        self._conn = None
+
+    def __enter__(self) -> sqlite3.Connection:
+        if not os.path.exists(self.db_path):
+            sys.exit(f"ERROR: database not found at {self.db_path}")
+
+        self._tmp_dir = tempfile.mkdtemp(prefix="copilot_usage_")
+        try:
+            tmp_db = os.path.join(self._tmp_dir, "session-store.snapshot.db")
+            src_conn = None
+            dst_conn = None
+            try:
+                try:
+                    src_conn = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
+                    src_conn.execute("SELECT 1")  # fail fast if not a valid SQLite DB
+                except sqlite3.Error as e:
+                    sys.exit(f"ERROR: could not open database at {self.db_path} read-only: {e}")
+
+                try:
+                    dst_conn = sqlite3.connect(tmp_db)
+                    src_conn.backup(dst_conn)
+                except sqlite3.Error as e:
+                    sys.exit(f"ERROR: failed to snapshot database at {self.db_path}: {e}")
+            finally:
+                if src_conn is not None:
+                    src_conn.close()
+                if dst_conn is not None:
+                    dst_conn.close()
+
+            self._conn = sqlite3.connect(f"file:{tmp_db}?mode=ro", uri=True)
+            return self._conn
+        except BaseException:
+            # Any failure past this point (including the sys.exit() calls
+            # above, which raise SystemExit) must not leak the temp dir.
+            shutil.rmtree(self._tmp_dir, ignore_errors=True)
+            self._tmp_dir = None
+            raise
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        try:
+            if self._conn is not None:
+                self._conn.close()
+        finally:
+            self._conn = None
+            if self._tmp_dir is not None:
+                shutil.rmtree(self._tmp_dir, ignore_errors=True)
+                self._tmp_dir = None
+        return False  # never suppress exceptions raised inside the `with` block
+
+
+# Tables/columns QUERY below depends on. Copilot CLI's session-store.db
+# schema is internal/undocumented (see README), so a newer or older CLI
+# version could rename or drop any of these - validate_schema() checks all
+# of them upfront and fails with one actionable message instead of letting
+# an arbitrary sqlite3.OperationalError surface from deep inside QUERY.
+REQUIRED_SCHEMA = {
+    "assistant_usage_events": [
+        "session_id", "created_at", "model", "reasoning_effort",
+        "input_tokens", "output_tokens", "cache_read_tokens",
+        "cache_write_tokens", "reasoning_tokens", "total_nano_aiu",
+    ],
+    "sessions": ["id", "repository", "cwd", "summary"],
+}
+
+
+def validate_schema(conn: sqlite3.Connection, db_path: str) -> None:
+    """Check that the snapshot has every table/column QUERY needs, and exit
+    with a single concise ERROR (naming every missing table/column) if not -
+    this is the most common failure mode for an incompatible Copilot CLI
+    schema, and should never surface as a raw sqlite3 traceback."""
+    existing_tables = {
+        row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    }
+
+    problems = []
+    for table, columns in REQUIRED_SCHEMA.items():
+        if table not in existing_tables:
+            problems.append(f"missing table '{table}'")
+            continue
+        existing_cols = {row[1] for row in conn.execute(f"PRAGMA table_info('{table}')")}
+        missing_cols = [c for c in columns if c not in existing_cols]
+        if missing_cols:
+            problems.append(f"table '{table}' is missing column(s): {', '.join(missing_cols)}")
+
+    if problems:
+        details = "\n  - ".join(problems)
+        sys.exit(
+            f"ERROR: {db_path} does not match the Copilot CLI schema this tool expects:\n"
+            f"  - {details}\n"
+            "This usually means an incompatible/newer (or older) Copilot CLI version "
+            "changed its internal database layout - see README's 'Requirements & "
+            "limitations' section. This tool relies on an internal, undocumented schema."
+        )
 
 
 QUERY = """
@@ -101,13 +208,11 @@ def main():
     args = ap.parse_args()
 
     user_label = args.user_label or getpass.getuser()
-    conn = open_readonly_copy(args.db)
-    try:
+    with ReadOnlySnapshot(args.db) as conn:
+        validate_schema(conn, args.db)
         cur = conn.execute(QUERY)
         rows = cur.fetchall()
         cols = [d[0] for d in cur.description]
-    finally:
-        conn.close()
 
     out_path = args.out or f"copilot_usage_{user_label}_{datetime.now().strftime('%Y-%m-%d')}.csv"
 
