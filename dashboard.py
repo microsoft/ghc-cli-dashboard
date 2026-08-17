@@ -50,6 +50,7 @@ OPTIONAL_COLUMN_DEFAULTS = {
 # ValueError/AttributeError deep inside HTML generation, or (worse) silently
 # becoming a misleading 0.
 NUMERIC_COLUMNS = ["calls", "total_tokens", "total_nano_aiu"]
+INTEGER_NUMERIC_COLUMNS = set(NUMERIC_COLUMNS)
 
 DATE_COLUMN = "date"
 
@@ -85,7 +86,7 @@ def _apply_optional_defaults(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _validate_numeric_column(df: pd.DataFrame, col: str, file_name: str) -> None:
-    """Reject non-numeric, NaN, infinite, or negative values in `col` -
+    """Reject non-numeric, NaN, infinite, negative, or fractional values in `col` -
     these are all nonsensical for a token/call count or cost total, and
     coercing them to 0 would silently understate usage."""
     if col not in df.columns:
@@ -98,13 +99,24 @@ def _validate_numeric_column(df: pd.DataFrame, col: str, file_name: str) -> None
             f"ERROR: {file_name}: column '{col}' has invalid value(s) "
             f"(non-numeric, NaN, infinite, or negative) at CSV row(s) {_format_rows(rows)}."
         )
+    if col in INTEGER_NUMERIC_COLUMNS:
+        fractional_mask = numeric.mod(1).ne(0)
+        if fractional_mask.any():
+            rows = _row_numbers(df, fractional_mask)
+            sys.exit(
+                f"ERROR: {file_name}: column '{col}' has fractional value(s) at CSV "
+                f"row(s) {_format_rows(rows)}. Expected whole-number counts."
+            )
+    df[col] = numeric
 
 
 def _validate_date_column(df: pd.DataFrame, col: str, file_name: str) -> None:
     if col not in df.columns:
         return
-    parsed = pd.to_datetime(df[col], errors="coerce")
-    bad_mask = parsed.isna()
+    date_text = df[col].astype("string")
+    exact_format = date_text.str.fullmatch(r"\d{4}-\d{2}-\d{2}", na=False)
+    parsed = pd.to_datetime(date_text, format="%Y-%m-%d", errors="coerce")
+    bad_mask = ~exact_format | parsed.isna()
     if bad_mask.any():
         rows = _row_numbers(df, bad_mask)
         sys.exit(

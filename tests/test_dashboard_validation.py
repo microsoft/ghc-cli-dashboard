@@ -140,6 +140,21 @@ def test_valid_zero_numeric_values_are_accepted(tmp_path):
     assert data.iloc[0]["calls"] == 0
 
 
+@pytest.mark.parametrize("col", ["calls", "total_tokens", "total_nano_aiu"])
+@pytest.mark.parametrize("bad_value", [1.5, "10.25"])
+def test_fractional_count_values_are_rejected(tmp_path, col, bad_value):
+    row = dict(CURRENT_ROW)
+    row[col] = bad_value
+    csv_path = _write_csv(tmp_path / "fractional.csv", [row])
+
+    with pytest.raises(SystemExit) as exc_info:
+        dashboard.load_data(csv_path)
+    message = str(exc_info.value)
+    assert "fractional" in message
+    assert col in message
+    assert "fractional.csv" in message
+
+
 def test_numeric_error_identifies_specific_row(tmp_path):
     rows = [dict(CURRENT_ROW), dict(CURRENT_ROW)]
     rows[1]["calls"] = -1
@@ -157,7 +172,18 @@ def test_numeric_error_identifies_specific_row(tmp_path):
 # Malformed / missing dates
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("bad_date", ["not-a-date", "2026-13-40", "", "32/13/2026"])
+@pytest.mark.parametrize(
+    "bad_date",
+    [
+        "not-a-date",
+        "2026-13-40",
+        "",
+        "32/13/2026",
+        "2026-01-01 12:00:00",
+        "2026-1-1",
+        "01/01/2026",
+    ],
+)
 def test_malformed_date_is_rejected(tmp_path, bad_date):
     row = dict(CURRENT_ROW)
     row["date"] = bad_date
