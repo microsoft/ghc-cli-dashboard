@@ -1,7 +1,12 @@
 """Tests for dashboard.py's deterministic, exported_at-based deduplication of
 overlapping exports: newest-exported_at-wins ordering (independent of file
 name), deterministic same-timestamp tie-breaking, safe vs. ambiguous legacy
-(no session_id) identity handling, and conflicting-duplicate-value warnings.
+(no session_id) identity handling, conflicting-duplicate-value warnings, and
+cross-version (legacy <-> current) reconciliation - a legacy row and a
+current (session_id-bearing) row for the same underlying session must be
+recognized as the same record (not double-counted) when the dimensions they
+share pin down exactly one current session, while remaining ambiguous
+(retained + warned, never guessed) when they don't.
 
 Run with: python -m pytest tests/ -v
 """
@@ -182,25 +187,95 @@ def test_legacy_naive_key_does_not_merge_unrelated_rows_across_projects(tmp_path
 
 
 # ---------------------------------------------------------------------------
-# Mixed legacy/current exports: legacy rows (no session_id) preserved
-# alongside current (session_id-bearing) rows, without cross-contamination
+# Mixed legacy/current exports: a legacy row (no session_id) and a current
+# (session_id-bearing) row that represent the SAME underlying session are
+# safely reconciled (no double-counting); rows that can't be safely
+# attributed to a single session are retained and flagged instead.
 # ---------------------------------------------------------------------------
 
-def test_mixed_legacy_and_current_rows_do_not_double_count_or_cross_dedup(tmp_path):
+def test_same_session_reported_once_legacy_and_once_current_is_reconciled_not_double_counted(tmp_path, capsys):
+    # The exact same underlying Copilot CLI session, captured twice: once by
+    # an old extract_usage.py export (no session_id at all) and once by a
+    # current export (session_id="s1"). Every aggregate value agrees - this
+    # is the "safe to reconcile" case: dimensions (user, date, project,
+    # model, reasoning_effort) match, and exactly one current session shares
+    # them, so identity can be inferred with confidence.
     current_row = _row(calls=3, total_tokens=150, exported_at="2026-01-10T00:00:00+00:00")
     legacy_row = {
         "user": "alice", "date": "2026-01-01", "project": "org/repo",
         "model": "gpt-4o", "reasoning_effort": "medium", "calls": 3, "total_tokens": 150,
+        "input_tokens": 100, "output_tokens": 50, "cache_read_tokens": 0,
+        "cache_write_tokens": 0, "reasoning_tokens": 0, "total_nano_aiu": 2e9,
     }
-    # legacy_row happens to share every value with current_row's (user,
-    # project, date, model, reasoning_effort, calls, total_tokens) - but the
-    # current row carries a session_id, so they must NOT be silently merged
-    # by a key that ignores session_id.
     _write_csv(tmp_path / "current.csv", [current_row])
     _write_csv(tmp_path / "legacy.csv", [legacy_row])
 
     data = dashboard.load_data(str(tmp_path / "*.csv"))
-    assert len(data) == 2  # both retained: distinct identity keys (sid vs legacy)
+    # Reconciled into exactly one row - NOT double-counted.
+    assert len(data) == 1
+    assert data.iloc[0]["session_id"] == "s1"  # the current/trusted row wins
+    assert data.iloc[0]["calls"] == 3
+
+    captured = capsys.readouterr()
+    # Values agreed - safe, silent merge: no dedup-conflict or ambiguity
+    # warning (a separate, unrelated legacy-export-metadata WARNING about
+    # the file missing export_format_version/exported_at is expected and
+    # is not what this test is about).
+    assert "conflicting duplicate" not in captured.out
+    assert "cannot safely tell" not in captured.out
+    assert "DISTINCT current-format sessions" not in captured.out
+    assert "Note: removed" in captured.out
+
+
+def test_same_session_legacy_and_current_disagree_still_reconciles_with_conflict_warning(tmp_path, capsys):
+    # Same underlying session (unique dimension match), but the legacy
+    # export's aggregates disagree with the current export's - still safely
+    # attributable to the one session sharing these dimensions, so it's
+    # reconciled (current/newest wins), but the value disagreement is a
+    # genuine conflict and must be reported, not silently resolved.
+    current_row = _row(calls=3, total_tokens=150, exported_at="2026-01-10T00:00:00+00:00")
+    legacy_row = {
+        "user": "alice", "date": "2026-01-01", "project": "org/repo",
+        "model": "gpt-4o", "reasoning_effort": "medium", "calls": 9, "total_tokens": 900,
+    }
+    _write_csv(tmp_path / "current.csv", [current_row])
+    _write_csv(tmp_path / "legacy.csv", [legacy_row])
+
+    data = dashboard.load_data(str(tmp_path / "*.csv"))
+    assert len(data) == 1  # still reconciled - not double-counted
+    assert data.iloc[0]["session_id"] == "s1"  # current row is trusted and wins
+    assert data.iloc[0]["calls"] == 3
+
+    captured = capsys.readouterr()
+    assert "WARNING" in captured.out
+    assert "session_id=s1" in captured.out
+
+
+def test_legacy_row_matching_multiple_distinct_current_sessions_is_ambiguous_and_retains_all(tmp_path, capsys):
+    # Two DIFFERENT real sessions (different session_id) share every other
+    # dimension (user, date, project, model, reasoning_effort) - e.g. two
+    # separate CLI sessions against the same repo on the same day. A legacy
+    # row also sharing those dimensions cannot be safely attributed to
+    # either one, so nothing is merged/dropped; all three rows are kept and
+    # the ambiguity is flagged.
+    session_a = _row(session_id="s-a", calls=3, total_tokens=150, exported_at="2026-01-10T00:00:00+00:00")
+    session_b = _row(session_id="s-b", calls=4, total_tokens=200, exported_at="2026-01-10T00:00:00+00:00")
+    legacy_row = {
+        "user": "alice", "date": "2026-01-01", "project": "org/repo",
+        "model": "gpt-4o", "reasoning_effort": "medium", "calls": 3, "total_tokens": 150,
+    }
+    _write_csv(tmp_path / "current_a.csv", [session_a])
+    _write_csv(tmp_path / "current_b.csv", [session_b])
+    _write_csv(tmp_path / "legacy.csv", [legacy_row])
+
+    data = dashboard.load_data(str(tmp_path / "*.csv"))
+    # Nothing merged or dropped - all three rows retained.
+    assert len(data) == 3
+    assert set(data["session_id"].fillna("<legacy>")) == {"s-a", "s-b", "<legacy>"}
+
+    captured = capsys.readouterr()
+    assert "WARNING" in captured.out
+    assert "DISTINCT current-format sessions" in captured.out
 
 
 # ---------------------------------------------------------------------------

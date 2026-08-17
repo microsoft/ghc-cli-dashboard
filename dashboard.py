@@ -268,7 +268,33 @@ def _resolve_duplicates(data: pd.DataFrame) -> pd.DataFrame:
         is why `project` is part of the legacy key, unlike the session_id
         key - session_id already uniquely pins a session's project).
 
-    Resolution per identity group with 2+ rows:
+    Cross-version reconciliation (legacy <-> current), deliberately
+    conservative:
+      A legacy row and a current (session_id-bearing) row are NEVER
+      compared directly by value - they live in disjoint identity schemes
+      on purpose, because a legacy row alone can never be *proven* to be a
+      particular session. Instead, for every legacy row we ask: across ALL
+      current-format rows sharing this legacy row's (user, project, date,
+      model, reasoning_effort) dimensions, how many *distinct* session_id
+      values exist?
+      - Exactly one: there is only one possible session this legacy row
+        could be re-reporting, so identity is safe to infer. The legacy
+        row is folded into that session's identity group (as if it always
+        carried that session_id) and resolved by the normal session_id
+        rules above - i.e. the newest/current row wins, silently if values
+        agree, or with a conflict WARNING if they don't. This is the one
+        and only case a legacy and current row are allowed to merge.
+      - Zero: no current row shares these dimensions; the legacy row is
+        resolved purely against other legacy rows, as before.
+      - Two or more: the dimensions alone can't tell us which of the
+        distinct sessions (if any) this legacy row belongs to - merging
+        it into any one of them risks silently discarding real data or
+        conflating two unrelated sessions. Per policy, the legacy row is
+        NOT merged into any of them; ALL rows (the legacy row(s) and every
+        distinct current session sharing the dimensions) are retained, and
+        a WARNING flags the ambiguity.
+
+    Resolution per identity group with 2+ rows (after the fold-in above):
       - Every VALUE_CONFLICT_COLUMNS-listed column identical across the
         group => same record, duplicated across exports. Keep exactly one:
         the row with the greatest `_export_ts`. Ties (identical timestamps,
@@ -277,17 +303,30 @@ def _resolve_duplicates(data: pd.DataFrame) -> pd.DataFrame:
         lexicographically greatest file name wins; this (and NOT relying on
         it for anything else) is the one documented, narrow use of file
         name as a tiebreaker.
-      - Values differ AND identity is session_id-based: a genuine conflict
-        about the same entity (e.g. a later export captured more calls for
-        that session/day). The row with the greatest `_export_ts` (same
-        tie-break) wins, and a WARNING names the file/key context and which
-        row won - conflicts are reported, never silently hidden.
+      - Values differ AND identity is session_id-based (including a
+        folded-in legacy row): a genuine conflict about the same entity
+        (e.g. a later export captured more calls for that session/day, or
+        a legacy row disagrees with the current row it was folded into).
+        The row with the greatest `_export_ts` (same tie-break) wins, and a
+        WARNING names the file/key context and which row won - conflicts
+        are reported, never silently hidden.
       - Values differ AND identity is the inferred legacy key: we cannot
         safely tell whether this is a real update to the same session or a
         coincidental collision between two unrelated legacy sessions. ALL
         rows in the group are retained (nothing dropped), and a WARNING
         flags the ambiguity so it can be investigated (e.g. by re-exporting
         with a current extract_usage.py that includes session_id).
+
+    Limitations (documented, not silently papered over): this policy can
+    only reconcile a legacy row when the dimensions it carries happen to
+    pin down exactly one current session. Two genuinely distinct sessions
+    for the same user/project/date/model/reasoning_effort (a realistic
+    case - e.g. two separate CLI sessions on the same repo the same day)
+    make any legacy row sharing those dimensions permanently ambiguous;
+    it is always retained rather than dropped, but may end up double
+    counted against whichever of those sessions it actually belongs to.
+    The only real fix is re-exporting with a session_id-bearing
+    extract_usage.py.
     """
     data = data.reset_index(drop=True)
     has_session = data["session_id"].notna() if "session_id" in data.columns else pd.Series(False, index=data.index)
@@ -301,13 +340,71 @@ def _resolve_duplicates(data: pd.DataFrame) -> pd.DataFrame:
         "sid\u241f" + _key_part("user") + "\u241f" + _key_part("session_id") + "\u241f"
         + _key_part("date") + "\u241f" + _key_part("model") + "\u241f" + _key_part("reasoning_effort")
     )
-    legacy_key = (
-        "legacy\u241f" + _key_part("user") + "\u241f" + _key_part("project") + "\u241f"
+    # Dimensions shared by both legacy and current rows (no session_id) -
+    # used both as the legacy-only identity key and, below, as the
+    # crosswalk that decides whether a legacy row can safely be folded
+    # into a single current session's identity group.
+    dim_key = (
+        _key_part("user") + "\u241f" + _key_part("project") + "\u241f"
         + _key_part("date") + "\u241f" + _key_part("model") + "\u241f" + _key_part("reasoning_effort")
     )
+    legacy_key = "legacy\u241f" + dim_key
     data["_identity_key"] = np.where(has_session, sid_key, legacy_key)
+    data["_dim_key"] = dim_key
+
+    # --- Cross-version reconciliation --------------------------------
+    # For every dimension shared with at least one legacy row, count how
+    # many DISTINCT current sessions exist. Exactly one => safe to fold
+    # the legacy row(s) into that session's group. Two or more => flag as
+    # ambiguous and leave every row (legacy and current) untouched.
+    crossover_notes = []
+    legacy_mask = ~has_session
+    if legacy_mask.any() and has_session.any():
+        session_rows = data.loc[has_session]
+        dims_with_legacy = set(data.loc[legacy_mask, "_dim_key"])
+        session_dims = session_rows[session_rows["_dim_key"].isin(dims_with_legacy)]
+        if not session_dims.empty:
+            dim_session_counts = session_dims.groupby("_dim_key")["session_id"].nunique()
+            unique_dims = set(dim_session_counts[dim_session_counts == 1].index)
+            ambiguous_dims = set(dim_session_counts[dim_session_counts > 1].index)
+
+            if unique_dims:
+                dim_to_sidkey = (
+                    session_dims[session_dims["_dim_key"].isin(unique_dims)]
+                    .drop_duplicates("_dim_key")
+                    .set_index("_dim_key")["_identity_key"]
+                )
+                fold_mask = legacy_mask & data["_dim_key"].isin(unique_dims)
+                data.loc[fold_mask, "_identity_key"] = data.loc[fold_mask, "_dim_key"].map(dim_to_sidkey)
+
+            for dim in sorted(ambiguous_dims):
+                legacy_rows_here = data[(data["_dim_key"] == dim) & legacy_mask]
+                if legacy_rows_here.empty:
+                    continue
+                sample = legacy_rows_here.iloc[0]
+                n_sessions = int(dim_session_counts[dim])
+                legacy_files = sorted(set(legacy_rows_here["_export_file"]))
+                crossover_notes.append(
+                    f"  - user={sample.get('user')} project={sample.get('project')} "
+                    f"date={sample.get('date')} model={sample.get('model')} "
+                    f"reasoning_effort={sample.get('reasoning_effort')}: {len(legacy_rows_here)} "
+                    f"legacy row(s) (no session_id) from file(s) {legacy_files} share these "
+                    f"dimensions with {n_sessions} DISTINCT current-format sessions - cannot "
+                    f"determine which (if any) they duplicate, so ALL rows sharing these "
+                    f"dimensions were KEPT (none merged or dropped)."
+                )
 
     value_cols = [c for c in VALUE_CONFLICT_COLUMNS if c in data.columns]
+
+    # Tiebreak helper: within a group that mixes a folded-in legacy row with
+    # a true current (session_id-bearing) row, the current row must win
+    # regardless of exported_at ordering ("the newest trusted/current row
+    # wins" - current format is trusted over legacy by policy, not just by
+    # timestamp). Sorting on this first, before _export_ts/_export_file,
+    # makes the existing "take the last row" winner logic do that for free;
+    # it's a no-op for groups that are purely legacy or purely current
+    # (constant value within the group).
+    data["_is_current"] = has_session.astype(int)
 
     keep_mask = pd.Series(True, index=data.index)
     removed = 0
@@ -323,7 +420,7 @@ def _resolve_duplicates(data: pd.DataFrame) -> pd.DataFrame:
             identical = bool((group[value_cols].nunique(dropna=False) <= 1).all())
 
         if identical:
-            ordered = group.sort_values(["_export_ts", "_export_file"])
+            ordered = group.sort_values(["_is_current", "_export_ts", "_export_file"])
             winner = ordered.index[-1]
             drop_idx = [i for i in group.index if i != winner]
             keep_mask.loc[drop_idx] = False
@@ -332,7 +429,7 @@ def _resolve_duplicates(data: pd.DataFrame) -> pd.DataFrame:
 
         files_involved = sorted(set(group["_export_file"]))
         if key.startswith("sid\u241f"):
-            ordered = group.sort_values(["_export_ts", "_export_file"])
+            ordered = group.sort_values(["_is_current", "_export_ts", "_export_file"])
             winner_idx = ordered.index[-1]
             drop_idx = [i for i in group.index if i != winner_idx]
             keep_mask.loc[drop_idx] = False
@@ -368,8 +465,19 @@ def _resolve_duplicates(data: pd.DataFrame) -> pd.DataFrame:
             "differing values - retained ALL of them rather than guessing which is correct:\n"
             + "\n".join(ambiguous_notes)
         )
+    if crossover_notes:
+        print(
+            "WARNING: found legacy (no session_id) row(s) whose (user, project, date, model, "
+            "reasoning_effort) dimensions match MORE THAN ONE distinct current-format session - "
+            "cannot safely reconcile, retained ALL of them rather than guessing which is correct:\n"
+            + "\n".join(crossover_notes)
+        )
 
-    result = data.loc[keep_mask].drop(columns=["_identity_key", "_export_ts", "_export_file"]).reset_index(drop=True)
+    result = (
+        data.loc[keep_mask]
+        .drop(columns=["_identity_key", "_dim_key", "_is_current", "_export_ts", "_export_file"])
+        .reset_index(drop=True)
+    )
     if removed:
         print(
             f"Note: removed {removed} duplicate row(s) found across overlapping exports "

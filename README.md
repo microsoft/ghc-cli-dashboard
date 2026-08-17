@@ -194,6 +194,39 @@ complete picture.
        retained (nothing is dropped), and a `WARNING:` flags the ambiguity
        so it can be investigated — e.g. by re-exporting with a current
        `extract_usage.py`, which always includes `session_id`.
+   - **Cross-version (legacy ↔ current) reconciliation, conservative by
+     design:** the `session_id`-based and legacy identity schemes above are
+     deliberately disjoint — comparing a legacy row directly against a
+     current row's `session_id` key would never match. Left unreconciled,
+     the *same* underlying session captured once by an old
+     `extract_usage.py` (no `session_id`) and once by a current one (with
+     `session_id`) would be counted **twice**. To fix this without
+     guessing, `dashboard.py` cross-checks every legacy row against
+     current-format rows sharing its `(user, project, date, model,
+     reasoning_effort)` dimensions and counts how many **distinct**
+     `session_id` values appear there:
+     - **Exactly one** current session shares those dimensions: the legacy
+       row is safely folded into that session's identity group and
+       resolved by the normal `session_id` rules above — the current
+       (trusted) row always wins over the legacy row, **regardless of
+       which `exported_at` is newer**, silently if their aggregated values
+       agree or with a conflict `WARNING:` if they don't.
+     - **Two or more** distinct current sessions share those dimensions
+       (e.g. two separate CLI sessions against the same repo on the same
+       day): the dimensions alone can't tell which one (if any) the legacy
+       row duplicates. Per policy, it is **never** merged into either —
+       **every** row sharing those dimensions (the legacy row(s) and each
+       distinct current session) is retained, and a `WARNING:` names the
+       ambiguity.
+     - **Known limitation:** this can only reconcile a legacy row when its
+       dimensions pin down exactly one current session. Two genuinely
+       distinct sessions with identical `(user, project, date, model,
+       reasoning_effort)` make any legacy row sharing those dimensions
+       permanently ambiguous — it's always retained (never dropped), but
+       may still end up double-counted against whichever session it
+       actually belongs to. There is no purely dimensional fix for that;
+       re-exporting with a `session_id`-bearing `extract_usage.py` is the
+       only way to fully disambiguate.
 
 ## Privacy notes on the generated HTML
 
@@ -474,8 +507,9 @@ export metadata / deduplication: `export_format_version`/`exported_at`
 emission and parsing, newest-`exported_at`-wins ordering, deterministic
 same-timestamp tie-breaking, legacy (pre-metadata) fallback warnings, and
 the safe-dedup vs. ambiguous-and-retained handling of legacy rows without
-`session_id` (see `tests/test_export_metadata.py` and
-`tests/test_dashboard_dedup.py`).
+`session_id`, including cross-version reconciliation between legacy and
+current rows for the same underlying session (see
+`tests/test_export_metadata.py` and `tests/test_dashboard_dedup.py`).
 
 ```powershell
 pip install -r requirements.txt -r requirements-dev.txt
