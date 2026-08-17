@@ -140,22 +140,65 @@ complete picture.
 
 ## Privacy notes on the generated HTML
 
-- The Project/Model checkboxes and the `--exclude-default` /
+- **Browser display filters (reversible, not privacy-safe for sharing).**
+  The Project/Model checkboxes and the `--exclude-default` /
   `--exclude-default-models` flags only control what's **visually shown**
   in the browser. They do **not** remove any row from the generated HTML
   file — every project, model, date, and (if included) task summary from
   the input CSV(s) is embedded in the file's data and is recoverable by
   anyone who opens the file's source (e.g. "View Page Source" or a text
-  editor), even for items you've unchecked or excluded by default.
-  Build-time redaction (actually dropping rows before the file is written)
-  is a **planned future improvement**, not implemented yet.
+  editor), even for items you've unchecked or excluded by default. Do
+  **not** rely on these for sharing a dashboard with someone who shouldn't
+  see certain projects.
+- **Build-time exclusion (irreversible, use this for sharing).** Two flags
+  actually drop data before the HTML file is written, so excluded content
+  is never embedded and cannot be recovered from the shared file:
+  - `--exclude-project PROJECT` (repeatable) removes every row for an
+    **exact** project name. Use it once per project — repeat the flag for
+    more than one, which also avoids any ambiguity with project names that
+    contain commas:
+    ```powershell
+    python dashboard.py --in "copilot_usage_*.csv" --out shared_dashboard.html `
+      --exclude-project "Personal Side Project" `
+      --exclude-project "Client A, Confidential"
+    ```
+  - `--omit-task-summaries` strips the free-text `task_summary` column
+    entirely before build, so no task-summary text (from any project) is
+    embedded. Work Patterns and Task Detail then correctly show their
+    existing "no task summaries available" state.
+  - Both apply before project/model orders, totals, the embedded RAW JSON,
+    the Project/Model checkboxes, and every insight callout are computed —
+    and an excluded project is also purged from `--exclude-default`'s
+    embedded default list, so it can't reappear there either. Console
+    output reports exactly how many rows/projects were removed, warns if
+    an `--exclude-project` name matched nothing (rather than silently
+    implying redaction happened), and exits with an error instead of
+    writing a broken/empty dashboard if exclusion would remove every row.
+  - **Example — sharing your own individual dashboard** while holding back
+    a couple of personal/confidential projects and any free-text task
+    detail:
+    ```powershell
+    python dashboard.py --in "copilot_usage_martinchan_*.csv" --out martinchan_shareable.html `
+      --exclude-project "Home Automation" --exclude-project "Job Search 2026" `
+      --omit-task-summaries
+    ```
+  - **This is not anonymization.** `--exclude-project` and
+    `--omit-task-summaries` only remove the specific project names / task
+    text you name. Every other field is retained and still identifies the
+    export as yours, including: the `user` label baked into the CSV by
+    `extract_usage.py --user-label` (or your machine username by default),
+    `session_id` values, and the names of every **non-excluded** project,
+    model, date, and (unless `--omit-task-summaries` is used) task summary.
+    Review the underlying CSV(s) yourself before sharing if you need
+    anything beyond exact project-name/task-summary redaction.
 - All data-derived text (project/model names, task summaries, the
   dashboard title) is HTML/JS-escaped when the file is generated, so it
   can't inject scripts or break the page - but escaping controls how the
-  data is *rendered*, not whether it's *present*. If you need to actually
-  exclude certain projects/tasks from the file, filter your input CSV(s)
-  before running `dashboard.py` (e.g. remove those rows, or don't pass
-  `--include-task-summary` if summaries may contain sensitive detail).
+  data is *rendered*, not whether it's *present*. For anything
+  `--exclude-project` / `--omit-task-summaries` don't cover (e.g. dropping
+  a specific date range, a specific model, or a specific user in a
+  team-wide export), filter your input CSV(s) before running
+  `dashboard.py`.
 - If you share a generated dashboard, treat it the same as you'd treat the
   source CSV(s) it was built from.
 - **Spreadsheet formula injection.** The dashboard's "Copy table" button
@@ -230,7 +273,9 @@ python dashboard.py --in "copilot_usage_*.csv" `
 ```
 
 (Only affects first load — once you toggle checkboxes yourself, your
-browser's choice wins.)
+browser's choice wins. See **Privacy notes on the generated HTML** above —
+this only hides rows in the browser; use `--exclude-project` /
+`--omit-task-summaries` to actually remove data before sharing a file.)
 
 ### Collapsible filter panel
 
@@ -363,7 +408,11 @@ figures are representative dashboard data.
 A small pytest suite in `tests/` guards the security-sensitive parts of
 `dashboard.py` — HTML/JS escaping of project/model names, the dashboard
 title, and the task-detail table's `</script>`-safe JSON embedding, plus
-formula-injection neutralization in the "Copy table" TSV clipboard text.
+formula-injection neutralization in the "Copy table" TSV clipboard text —
+and the build-time redaction flags (`--exclude-project`,
+`--omit-task-summaries`), including hostile/unusual project names,
+`--exclude-default` overlap, unmatched-exclusion warnings, and the
+all-rows-excluded error.
 
 ```powershell
 pip install -r requirements.txt -r requirements-dev.txt
