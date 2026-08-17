@@ -125,6 +125,12 @@ def build_dashboard(data: pd.DataFrame, out_path: str, title: str,
     model_order_json = _json_for_script(model_order)
     exclude_default_projects_json = _json_for_script(exclude_default_projects)
     exclude_default_models_json = _json_for_script(exclude_default_models)
+    storage_key_project_json = _json_for_script(f"copilot_usage_excluded_projects::{storage_key}")
+    storage_key_model_json = _json_for_script(f"copilot_usage_excluded_models::{storage_key}")
+    storage_key_metric_json = _json_for_script(f"copilot_usage_metric::{storage_key}")
+    storage_key_datefilter_json = _json_for_script(f"copilot_usage_datefilter::{storage_key}")
+    storage_key_trend_json = _json_for_script(f"copilot_usage_trend_granularity::{storage_key}")
+    storage_key_sidebar_json = _json_for_script(f"copilot_usage_sidebar_collapsed::{storage_key}")
 
     project_checkbox_items = _checkbox_items(project_order, projects_by_tokens, "proj-check")
     model_checkbox_items = _checkbox_items(model_order, models_by_tokens, "model-check")
@@ -433,12 +439,12 @@ const MODEL_PALETTE = ["#2f6feb", "#f0883e", "#3fb950", "#a371f7", "#db6d28", "#
 const MODEL_COLORS = {{}};
 MODEL_ORDER.forEach((m, i) => {{ MODEL_COLORS[m] = MODEL_PALETTE[i % MODEL_PALETTE.length]; }});
 const HAS_TASKS = {str(has_tasks).lower()};
-const STORAGE_KEY_PROJECT = "copilot_usage_excluded_projects::{storage_key}";
-const STORAGE_KEY_MODEL = "copilot_usage_excluded_models::{storage_key}";
-const STORAGE_KEY_METRIC = "copilot_usage_metric::{storage_key}";
-const STORAGE_KEY_DATEFILTER = "copilot_usage_datefilter::{storage_key}";
-const STORAGE_KEY_TREND = "copilot_usage_trend_granularity::{storage_key}";
-const STORAGE_KEY_SIDEBAR = "copilot_usage_sidebar_collapsed::{storage_key}";
+const STORAGE_KEY_PROJECT = {storage_key_project_json};
+const STORAGE_KEY_MODEL = {storage_key_model_json};
+const STORAGE_KEY_METRIC = {storage_key_metric_json};
+const STORAGE_KEY_DATEFILTER = {storage_key_datefilter_json};
+const STORAGE_KEY_TREND = {storage_key_trend_json};
+const STORAGE_KEY_SIDEBAR = {storage_key_sidebar_json};
 const DEFAULT_EXCLUDED_PROJECTS = {exclude_default_projects_json};
 const DEFAULT_EXCLUDED_MODELS = {exclude_default_models_json};
 

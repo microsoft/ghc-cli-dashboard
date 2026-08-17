@@ -39,14 +39,15 @@ NODE = shutil.which("node")
 
 
 def _build(tmp_path, rows, title="Copilot CLI Token Usage Dashboard",
-           exclude_default_projects=None, exclude_default_models=None) -> str:
+           exclude_default_projects=None, exclude_default_models=None,
+           storage_key="test") -> str:
     """Build a dashboard HTML string from a list of row dicts and return it."""
     data = pd.DataFrame(rows)
     out_path = tmp_path / "out.html"
     dashboard.build_dashboard(
         data, str(out_path), title,
         exclude_default_projects or [], exclude_default_models or [],
-        storage_key="test",
+        storage_key=storage_key,
     )
     return out_path.read_text(encoding="utf-8")
 
@@ -172,6 +173,19 @@ def test_project_and_model_order_json_blocks_are_safe(tmp_path):
 
     assert IMG_XSS not in out
     assert SCRIPT_BREAKOUT not in out
+
+
+def test_storage_key_is_script_safe_and_roundtrips(tmp_path):
+    hostile_key = 'C:\\reports\\x";alert(1);//</script>\u2028.html'
+    out = _build(tmp_path, _base_rows(), storage_key=hostile_key)
+
+    match = re.search(r"const STORAGE_KEY_PROJECT = (.*?);\n", out)
+    assert match is not None
+    serialized = match.group(1)
+    assert "</script" not in serialized.lower()
+    assert "\u2028" not in serialized
+    assert json.loads(serialized) == f"copilot_usage_excluded_projects::{hostile_key}"
+    assert '\\";alert(1);//' in serialized
 
 
 # ---------------------------------------------------------------------------
