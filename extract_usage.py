@@ -50,7 +50,7 @@ from datetime import datetime, timezone
 #     existed. Recognized by dashboard.py by the *absence* of the
 #     `export_format_version` (and `exported_at`) column(s) - there is no
 #     literal "1" ever written to a CSV.
-#   version 2 (current): adds two columns to every row: `export_format_version`
+#   version 2: adds two columns to every row: `export_format_version`
 #     (this literal, as a string) and `exported_at` (a single, timezone-aware
 #     ISO-8601 UTC timestamp shared by every row in the file, recording when
 #     *this run* of extract_usage.py produced the file - not when any
@@ -58,7 +58,47 @@ from datetime import datetime, timezone
 #     deterministically resolve overlapping/duplicate rows across multiple
 #     exports (see dashboard.py's dedup policy), instead of relying on
 #     filename sort order.
-EXPORT_FORMAT_VERSION = "2"
+#   version 3 (current): adds one column, `cost_data_calls` - see the
+#     "Token/cost definitions" note below for exactly what it means and why
+#     it exists. Every other column (including `total_nano_aiu` itself) is
+#     unchanged in meaning; this is purely an additive coverage signal.
+EXPORT_FORMAT_VERSION = "3"
+
+
+# Token/cost definitions (read this before interpreting any exported column)
+# ----------------------------------------------------------------------------
+# - `total_tokens` = `input_tokens` + `output_tokens` ONLY. It intentionally
+#   does NOT include `cache_read_tokens`, `cache_write_tokens`, or
+#   `reasoning_tokens` - those three are separate, additive categories
+#   reported by Copilot CLI's own usage log, not a subset already folded
+#   into `total_tokens`. Do not assume input+output+cache_read+cache_write+
+#   reasoning is some other "grand total" figure the CLI also reports
+#   elsewhere - it isn't; this export simply passes through whatever the
+#   five raw counters say, side by side.
+# - `total_nano_aiu` is the underlying COST basis for the row (GitHub's
+#   internal billing unit; dashboard.py converts it to an estimated USD
+#   figure). It is priced per-category (e.g. cached input is typically
+#   cheaper per token than fresh input, and reasoning tokens are billed
+#   like output tokens) - it is NOT simply proportional to `total_tokens`,
+#   and a row with a high `total_tokens` but heavy cache-read reuse can
+#   cost less than a row with a lower `total_tokens` but no cache hits.
+#   Treat `total_tokens` and `total_nano_aiu` as two independent figures
+#   about the same row, not one derived from the other.
+# - `cost_data_calls` (added in version 3) is a coverage counter, not a
+#   usage metric: it's the number of underlying `assistant_usage_events`
+#   rows folded into this (session, day, model, reasoning_effort) export
+#   row that had a non-NULL `total_nano_aiu` in the source database.
+#   Comparing it to `calls` tells a consumer (dashboard.py, or anyone else
+#   reading this CSV directly) whether this row's `total_nano_aiu` is a
+#   complete, confirmed sum (`cost_data_calls == calls`), a partial one
+#   (`0 < cost_data_calls < calls` - some calls contributed no cost data),
+#   or entirely absent (`cost_data_calls == 0`, in which case
+#   `total_nano_aiu` is written as `0` by SQL SUM-of-nothing convention and
+#   must NOT be read as "this row cost nothing" - it means "no cost data
+#   was recorded for it"). CSVs from before version 3 have no
+#   `cost_data_calls` column at all, which dashboard.py treats as "coverage
+#   unknown" (neither confirmed-complete nor confirmed-missing) rather than
+#   silently assuming full coverage.
 
 
 def default_db_path() -> str:
@@ -218,7 +258,13 @@ SELECT
     SUM(u.cache_read_tokens)  AS cache_read_tokens,
     SUM(u.cache_write_tokens) AS cache_write_tokens,
     SUM(u.reasoning_tokens) AS reasoning_tokens,
-    SUM(u.total_nano_aiu) AS total_nano_aiu
+    SUM(u.total_nano_aiu) AS total_nano_aiu,
+    -- Coverage counter, not a usage metric: how many of the COUNT(*) calls in
+    -- this group actually had a non-NULL total_nano_aiu to contribute to the
+    -- SUM above. SQL's SUM() silently ignores NULLs, so without this a group
+    -- where some/all calls lack cost data is indistinguishable from a group
+    -- that is genuinely free - see the "Token/cost definitions" note above.
+    COUNT(u.total_nano_aiu) AS cost_data_calls
 FROM assistant_usage_events u
 JOIN sessions s ON s.id = u.session_id
 GROUP BY s.id, day, u.model, reasoning_effort
@@ -256,7 +302,8 @@ def main():
     out_cols = [
         "user", "date", "project", "model", "reasoning_effort", "calls",
         "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens",
-        "total_tokens", "total_nano_aiu", "session_id", "export_format_version", "exported_at",
+        "total_tokens", "total_nano_aiu", "cost_data_calls", "session_id",
+        "export_format_version", "exported_at",
     ]
     if args.include_task_summary:
         out_cols.insert(5, "task_summary")
@@ -283,6 +330,10 @@ def main():
                 "reasoning_tokens": r[idx["reasoning_tokens"]] or 0,
                 "total_tokens": input_tokens + output_tokens,
                 "total_nano_aiu": r[idx["total_nano_aiu"]] or 0,
+                # See "Token/cost definitions" above: this is a COVERAGE count
+                # (how many of the `calls` calls had real cost data), not a
+                # cost figure itself - do not confuse it with total_nano_aiu.
+                "cost_data_calls": r[idx["cost_data_calls"]] or 0,
                 "session_id": r[idx["session_id"]],
                 "export_format_version": EXPORT_FORMAT_VERSION,
                 "exported_at": exported_at,
