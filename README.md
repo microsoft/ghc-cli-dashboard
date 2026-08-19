@@ -135,9 +135,10 @@ complete picture.
      `exported_at` — not the file name — to resolve rows that appear in more
      than one overlapping export.
 2. **`dashboard.py`** reads one or many of those CSVs and renders the HTML
-   dashboard: top projects/tasks, model mix, cost trend, reasoning-effort
-   breakdown — with live Project/Model checkbox filters and a Tokens ↔ Cost
-   toggle. Each `extract_usage.py` export contains a user's **full** history
+   dashboard: top projects/tasks, model mix, provider mix, cost trend,
+   reasoning-effort breakdown — with live Project/Model/Provider checkbox
+   filters and a Tokens ↔ Cost toggle. Each `extract_usage.py` export
+   contains a user's **full** history
    (not just what's new since the last run), so re-exporting weekly and
    globbing all `copilot_usage_*.csv` files is expected to produce
    overlapping rows across files.
@@ -311,15 +312,15 @@ explicitly here:
 ## Privacy notes on the generated HTML
 
 - **Browser display filters (reversible, not privacy-safe for sharing).**
-  The Project/Model checkboxes and the `--exclude-default` /
+  The Project/Model/Provider checkboxes and the `--exclude-default` /
   `--exclude-default-models` flags only control what's **visually shown**
   in the browser. They do **not** remove any row from the generated HTML
-  file — every project, model, date, and (if included) task summary from
-  the input CSV(s) is embedded in the file's data and is recoverable by
-  anyone who opens the file's source (e.g. "View Page Source" or a text
-  editor), even for items you've unchecked or excluded by default. Do
-  **not** rely on these for sharing a dashboard with someone who shouldn't
-  see certain projects.
+  file — every project, model, provider, date, and (if included) task
+  summary from the input CSV(s) is embedded in the file's data and is
+  recoverable by anyone who opens the file's source (e.g. "View Page
+  Source" or a text editor), even for items you've unchecked or excluded
+  by default. Do **not** rely on these for sharing a dashboard with
+  someone who shouldn't see certain projects.
 - **Build-time exclusion (irreversible, use this for sharing).** Two flags
   actually drop data before the HTML file is written, so excluded content
   is never embedded and cannot be recovered from the shared file:
@@ -337,7 +338,7 @@ explicitly here:
     embedded. Work Patterns and Task Detail then correctly show their
     existing "no task summaries available" state.
   - Both apply before project/model orders, totals, the embedded RAW JSON,
-    the Project/Model checkboxes, and every insight callout are computed —
+    the Project/Model/Provider checkboxes, and every insight callout are computed —
     and an excluded project is also purged from `--exclude-default`'s
     embedded default list, so it can't reappear there either. Console
     output reports exactly how many rows/projects were removed, warns if
@@ -449,14 +450,68 @@ categories that row is missing. A note beneath the chart states how many
 calls in the current selection actually have the full breakdown recorded;
 the rest are excluded from the totals, not counted as zero.
 
-### Project & model filters
+### Provider Mix
 
-Two independent checklists in the sidebar — **Projects** and **Models** —
-each with Select all/Select none. Unchecking an item instantly excludes it
-from every chart and KPI. Each selection is saved in the browser's
-`localStorage` per dashboard file, so your choice persists next time you
-reopen it. Seed default exclusions (e.g. for personal projects you never
-want shown by default) with:
+A chart in the Overview section groups the current metric (tokens or
+estimated cost) by inferred **provider** (Anthropic, OpenAI, Google, xAI,
+or `Other / Unknown`) instead of by individual model — useful for a
+quick "which vendor am I actually spending on" view without reading
+through a dozen model names. It uses the same project/model/provider/date
+filters as every other chart, a fixed color per provider (see **Provider
+inference** below), and is a visually separate chart/legend from the
+per-model pie so the two never get confused.
+
+### Provider inference
+
+Every usage row also carries a derived **provider** label, inferred
+heuristically from the raw `model` name by `provider_classifier.py` at
+dashboard-**build** time (in Python) — never recomputed in the browser's
+JavaScript. This is a convenience for grouping/filtering, **not**
+authoritative billing/vendor metadata from GitHub or any model provider:
+
+| Model name prefix (case/whitespace-insensitive) | Provider   |
+|--------------------------------------------------|------------|
+| `claude*`                                        | Anthropic  |
+| `gpt*`, `o1*`, `o3*`, `o4*`                       | OpenAI     |
+| `gemini*`                                         | Google     |
+| `grok*`                                           | xAI        |
+| anything else (including blank/missing model)     | `Other / Unknown` |
+
+Rules are checked in order and the first matching prefix wins. A model
+that doesn't match any rule above — a brand-new model family, a renamed
+model, or malformed/missing data — always falls back to the fixed
+`Other / Unknown` label; the raw model string itself is **never** shown as
+if it were a provider name, and the raw `model` value/column is never
+altered. `Other / Unknown` is treated exactly like any other provider
+(same checkbox, same chart slice) and stays visible in both whenever at
+least one row falls into it — it is never hidden or dropped by default.
+
+To extend the mapping for a new model family, edit the ordered
+`PROVIDER_PREFIX_RULES` list (and, for a genuinely new provider, add a
+matching entry to `PROVIDER_CANONICAL_ORDER`/`PROVIDER_PALETTE`) in
+`provider_classifier.py` — see that file's module docstring for the full
+maintenance procedure. Because this is a small, evolving heuristic (GitHub
+and model vendors can add/rename model families at any time without
+notice), treat the Provider Mix chart and filter as a best-effort grouping
+aid, not a source of truth for billing reconciliation.
+
+### Project, model & provider filters
+
+Three independent checklists in the sidebar — **Projects**, **Models**, and
+**Providers** — each with Select all/Select none. Unchecking an item
+instantly excludes it from every chart and KPI. Each checklist's selection
+is saved under its **own separate** `localStorage` key per dashboard file
+(so, for example, clearing your Model selection never touches your
+Provider selection), and all three start with everything selected by
+default. Filters are **independent and combine with AND, not OR**: a row
+must pass the Project filter *and* the Model filter *and* the Provider
+filter *and* the Date range filter to appear anywhere in the dashboard.
+In particular, **unchecking a provider excludes every one of its models
+from every chart, even if those individual models' own checkboxes are
+still checked** — the Provider checklist has its own hint text calling
+this out directly in the dashboard. Seed default exclusions for
+projects/models (e.g. for personal projects you never want shown by
+default) with:
 
 ```powershell
 python dashboard.py --in "copilot_usage_*.csv" `
@@ -467,15 +522,25 @@ python dashboard.py --in "copilot_usage_*.csv" `
 (Only affects first load — once you toggle checkboxes yourself, your
 browser's choice wins. See **Privacy notes on the generated HTML** above —
 this only hides rows in the browser; use `--exclude-project` /
-`--omit-task-summaries` to actually remove data before sharing a file.)
+`--omit-task-summaries` to actually remove data before sharing a file.
+There is no `--exclude-default-providers` flag — the Provider checklist
+always starts fully selected on first load.)
+
+**No CSV schema change:** the `provider` field is derived purely from the
+existing `model` column at dashboard-build time and embedded only in the
+generated HTML's data — it is never written to, or read from, any CSV
+produced by `extract_usage.py`, so current and legacy exports alike work
+unchanged (a legacy CSV with only `user`/`date`/`project`/`model`/`calls`/
+`total_tokens` still gets a correctly-inferred `provider` per row).
 
 ### Collapsible filter panel
 
-The Projects and Models filter sidebar can be collapsed with **Hide filters**
-to give the charts more room. Its state is remembered in the browser alongside
-the other dashboard selections.
+The Projects, Models, and Providers filter sidebar can be collapsed with
+**Hide filters** to give the charts more room. Its state is remembered in
+the browser alongside the other dashboard selections.
 
 ### Task detail table
+
 
 The Task detail section includes a client-side search across project and task
 names, clickable sorting for every column, and a **Copy table** button that
@@ -634,6 +699,19 @@ current rows for the same underlying session (see
 (full/partial/none/unknown), token-category composition totals, legacy
 (pre-`cost_data_calls`) CSVs, and divide-by-zero robustness in the
 Value-for-Money chart when cost data is missing or zero.
+`tests/test_provider_classifier.py` covers the standalone
+`provider_classifier.py` heuristic in isolation — every current model
+identifier, case/whitespace normalization, `None`/empty/unknown fallback
+to the fixed `Other / Unknown` label, and provider ordering/color
+determinism. `tests/test_provider_filter.py` covers the Provider feature
+end-to-end in `dashboard.py`: the derived `provider` field and unchanged
+CSV schema, the Provider filter panel/checkboxes and its own
+`localStorage` key/default-selected state, AND-semantics filtering
+through the single `RAW.filter` choke point (including a provider
+exclusion hiding rows even when the corresponding model checkbox stays
+checked), the all-providers-excluded zero state, `Other / Unknown`
+visibility, hostile model-name safety, and current/legacy CSV
+compatibility.
 
 ```powershell
 pip install -r requirements.txt -r requirements-dev.txt

@@ -34,6 +34,8 @@ import numpy as np
 import pandas as pd
 from plotly.offline import get_plotlyjs
 
+from provider_classifier import PROVIDER_COLORS, classify_provider
+
 # Columns every input CSV must have for a record to be constructed at all -
 # these are read unconditionally (no getattr/default) in build_dashboard().
 REQUIRED_COLUMNS = ["user", "date", "project", "model", "calls", "total_tokens"]
@@ -716,6 +718,12 @@ def build_dashboard(data: pd.DataFrame, out_path: str, title: str,
         rec = {
             "project": r.project,
             "model": r.model,
+            # Derived, display-only field: a best-effort provider inferred
+            # from the raw model name at build time - see
+            # provider_classifier.py's module docstring. This is heuristic
+            # inference, NOT authoritative billing metadata, and the raw
+            # `model` value above is left completely unchanged.
+            "provider": classify_provider(r.model),
             "date": r.date,
             "user": r.user,
             "calls": int(r.calls),
@@ -747,6 +755,16 @@ def build_dashboard(data: pd.DataFrame, out_path: str, title: str,
     models_by_tokens = data.groupby("model")["total_tokens"].sum().sort_values(ascending=False)
     model_order = models_by_tokens.index.tolist()
 
+    # Provider is derived (not a CSV column) - classify once here from the
+    # raw `model` value (see provider_classifier.py) and group on that
+    # derived Series. Ordered by token share like project/model above, so
+    # the filter panel lists the heaviest-usage provider first; the OTHER
+    # UNKNOWN bucket is included like any other provider whenever present -
+    # it is never dropped or hidden by default.
+    provider_series = data["model"].map(classify_provider)
+    providers_by_tokens = data.groupby(provider_series)["total_tokens"].sum().sort_values(ascending=False)
+    provider_order = providers_by_tokens.index.tolist()
+
     n_users = data["user"].nunique()
 
     # All of these are embedded verbatim inside a <script> block below, so they
@@ -754,10 +772,19 @@ def build_dashboard(data: pd.DataFrame, out_path: str, title: str,
     raw_json = _json_for_script(records)
     project_order_json = _json_for_script(project_order)
     model_order_json = _json_for_script(model_order)
+    provider_order_json = _json_for_script(provider_order)
+    provider_colors_json = _json_for_script(PROVIDER_COLORS)
     exclude_default_projects_json = _json_for_script(exclude_default_projects)
     exclude_default_models_json = _json_for_script(exclude_default_models)
+    # No CLI flag seeds a default-excluded provider set (out of scope for
+    # this feature) - the Provider panel always starts with every provider
+    # selected; see README's "Project, model & provider filters" section.
+    exclude_default_providers_json = _json_for_script([])
     storage_key_project_json = _json_for_script(f"copilot_usage_excluded_projects::{storage_key}")
     storage_key_model_json = _json_for_script(f"copilot_usage_excluded_models::{storage_key}")
+    # Deliberately a distinct/separate localStorage key from project/model -
+    # see requirement to keep provider selection state independent.
+    storage_key_provider_json = _json_for_script(f"copilot_usage_excluded_providers::{storage_key}")
     storage_key_metric_json = _json_for_script(f"copilot_usage_metric::{storage_key}")
     storage_key_datefilter_json = _json_for_script(f"copilot_usage_datefilter::{storage_key}")
     storage_key_trend_json = _json_for_script(f"copilot_usage_trend_granularity::{storage_key}")
@@ -765,6 +792,7 @@ def build_dashboard(data: pd.DataFrame, out_path: str, title: str,
 
     project_checkbox_items = _checkbox_items(project_order, projects_by_tokens, "proj-check")
     model_checkbox_items = _checkbox_items(model_order, models_by_tokens, "model-check")
+    provider_checkbox_items = _checkbox_items(provider_order, providers_by_tokens, "provider-check")
 
     plotly_js = get_plotlyjs()
     title_html = _esc(title)
@@ -819,8 +847,9 @@ def build_dashboard(data: pd.DataFrame, out_path: str, title: str,
   .layout.sidebar-collapsed .side-panel,
   .layout.sidebar-collapsed .sidebar .hint {{ display: none; }}
   .side-panel {{ background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; padding: 14px; overflow-y: auto; box-shadow: var(--shadow); }}
-  #proj-panel {{ max-height: 46vh; }}
-  #model-panel {{ max-height: 30vh; }}
+  #proj-panel {{ max-height: 38vh; }}
+  #model-panel {{ max-height: 26vh; }}
+  #provider-panel {{ max-height: 20vh; }}
   .side-panel h2 {{ margin-top: 0; font-size: 14px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }}
   .sidebar-toggle {{
     display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%;
@@ -909,7 +938,7 @@ def build_dashboard(data: pd.DataFrame, out_path: str, title: str,
 <body>
   <div class="hero">
     <h1>{title_html}</h1>
-    <p class="subtitle">Generated {datetime.now():%Y-%m-%d %H:%M} &middot; source: Copilot CLI session-store.db exports &middot; uncheck a project or model in the sidebar to exclude it from every chart</p>
+    <p class="subtitle">Generated {datetime.now():%Y-%m-%d %H:%M} &middot; source: Copilot CLI session-store.db exports &middot; uncheck a project, model, or provider in the sidebar to exclude it from every chart</p>
     <div class="nav-pills">
       <a href="#sec-overview">Overview</a>
       <a href="#sec-trends">Trends</a>
@@ -922,7 +951,7 @@ def build_dashboard(data: pd.DataFrame, out_path: str, title: str,
   <div class="page">
   <div class="layout" id="layout">
     <div class="sidebar">
-      <button class="sidebar-toggle" id="sidebar-toggle" onclick="toggleSidebar()" title="Show/hide the Projects and Models filter panel">
+      <button class="sidebar-toggle" id="sidebar-toggle" onclick="toggleSidebar()" title="Show/hide the Projects, Models, and Providers filter panel">
         <span id="sidebar-toggle-icon">&laquo;</span><span class="toggle-label">Hide filters</span>
       </button>
       <div class="side-panel" id="proj-panel">
@@ -940,6 +969,15 @@ def build_dashboard(data: pd.DataFrame, out_path: str, title: str,
           <button onclick="setAll('model', false)">Select none</button>
         </div>
         <div id="model-list">{model_checkbox_items}</div>
+      </div>
+      <div class="side-panel" id="provider-panel">
+        <h2>Providers</h2>
+        <div class="proj-buttons">
+          <button onclick="setAll('provider', true)">Select all</button>
+          <button onclick="setAll('provider', false)">Select none</button>
+        </div>
+        <div id="provider-list">{provider_checkbox_items}</div>
+        <div class="hint">Provider is inferred heuristically from each model's name (not official billing metadata) &mdash; see README. Disabling a provider excludes ALL of its models from every chart, even if those models' own checkboxes above stay checked. Project, model, provider, and date filters all apply together (every enabled filter must match - AND, not OR).</div>
       </div>
       <div class="hint">Your selections are remembered in this browser for this dashboard file.</div>
     </div>
@@ -977,6 +1015,10 @@ def build_dashboard(data: pd.DataFrame, out_path: str, title: str,
           <div class="card">
             <span class="info-icon" title="Each slice is one model's share of the current metric (tokens or cost), summed across your currently selected projects, models, and date range. Slice size + label percentage always add up to 100% of what's selected.">?</span>
             <div id="fig_model" style="height:400px;"></div>
+          </div>
+          <div class="card">
+            <span class="info-icon" title="Each slice is one AI PROVIDER's share of the current metric (tokens or cost) - Anthropic, OpenAI, Google, xAI, etc. - inferred heuristically from each row's model name at build time (not official billing metadata; see README). Models that don't match a known provider prefix are grouped under 'Other / Unknown', which stays visible whenever any of its rows are selected. Uses the same project/model/provider/date filters as every other chart on this page.">?</span>
+            <div id="fig_provider" style="height:400px;"></div>
           </div>
           {"<div class='card'><span class='info-icon' title=\"Sums the current metric per user account across selected projects/models/dates. Useful when this export covers more than one person.\">?</span><div id='fig_user' style='height:400px;'></div></div>" if n_users > 1 else "<div class='card'><span class='info-icon' title=\"Sums the current metric by reasoning-effort level (none/low/medium/high). Higher reasoning effort makes a model think more internally before responding, which increases both token usage and cost.\">?</span><div id='fig_effort' style='height:400px;'></div></div>"}
         </div>
@@ -1098,39 +1140,60 @@ RAW.forEach(r => {{
 
 const PROJECT_ORDER = {project_order_json};
 const MODEL_ORDER = {model_order_json};
+const PROVIDER_ORDER = {provider_order_json};
 // Shared qualitative palette so a model's colour is consistent across the pie, stacked-bar,
 // and value-for-money charts - critical for scanning multiple charts without re-reading legends.
 const MODEL_PALETTE = ["#2f6feb", "#f0883e", "#3fb950", "#a371f7", "#db6d28", "#79c0ff", "#f778ba", "#56d364", "#bf8700", "#8250df", "#ff7b72", "#39c5cf"];
 const MODEL_COLORS = {{}};
 MODEL_ORDER.forEach((m, i) => {{ MODEL_COLORS[m] = MODEL_PALETTE[i % MODEL_PALETTE.length]; }});
+// Provider colors are computed once in Python (provider_classifier.py) and embedded
+// verbatim here - fixed per provider NAME (not by rank/order in this dataset), so a
+// provider's colour never shifts across different filtered views or exports. This is
+// an intentionally separate palette/dict from MODEL_COLORS above so the Provider Mix
+// chart never accidentally shares (or clashes with) an individual model's legend colour.
+const PROVIDER_COLORS = {provider_colors_json};
 const HAS_TASKS = {str(has_tasks).lower()};
 const STORAGE_KEY_PROJECT = {storage_key_project_json};
 const STORAGE_KEY_MODEL = {storage_key_model_json};
+const STORAGE_KEY_PROVIDER = {storage_key_provider_json};
 const STORAGE_KEY_METRIC = {storage_key_metric_json};
 const STORAGE_KEY_DATEFILTER = {storage_key_datefilter_json};
 const STORAGE_KEY_TREND = {storage_key_trend_json};
 const STORAGE_KEY_SIDEBAR = {storage_key_sidebar_json};
 const DEFAULT_EXCLUDED_PROJECTS = {exclude_default_projects_json};
 const DEFAULT_EXCLUDED_MODELS = {exclude_default_models_json};
+const DEFAULT_EXCLUDED_PROVIDERS = {exclude_default_providers_json};
 
 // "Last N days" is computed relative to the most recent date in the loaded export(s),
 // not the real-world today - the CSV may have been generated some time ago.
 const ALL_DATES_SORTED = RAW.map(r => r.date).filter(Boolean).sort();
 const GLOBAL_MAX_DATE = ALL_DATES_SORTED.length ? ALL_DATES_SORTED[ALL_DATES_SORTED.length - 1] : null;
 
+// Single dispatch table for every checkbox "kind" (project/model/provider) -
+// each independent filter dimension is described once here (its localStorage
+// key, its default-excluded seed, its full ordered value list, and the CSS
+// class marking its checkboxes) instead of copy-pasted project/model
+// ternaries scattered across loadExcluded/saveExcluded/setAll/the change
+// listener below. Adding a future filter dimension only requires one more
+// entry here (plus its own checkbox markup) - see README's "Project, model &
+// provider filters" section for the resulting AND semantics across kinds.
+const FILTER_KINDS = {{
+  project: {{ storageKey: STORAGE_KEY_PROJECT, defaultExcluded: DEFAULT_EXCLUDED_PROJECTS, order: PROJECT_ORDER, checkboxClass: "proj-check" }},
+  model: {{ storageKey: STORAGE_KEY_MODEL, defaultExcluded: DEFAULT_EXCLUDED_MODELS, order: MODEL_ORDER, checkboxClass: "model-check" }},
+  provider: {{ storageKey: STORAGE_KEY_PROVIDER, defaultExcluded: DEFAULT_EXCLUDED_PROVIDERS, order: PROVIDER_ORDER, checkboxClass: "provider-check" }},
+}};
+
 function loadExcluded(kind) {{
-  const key = kind === "project" ? STORAGE_KEY_PROJECT : STORAGE_KEY_MODEL;
-  const dflt = kind === "project" ? DEFAULT_EXCLUDED_PROJECTS : DEFAULT_EXCLUDED_MODELS;
-  const stored = localStorage.getItem(key);
+  const cfg = FILTER_KINDS[kind];
+  const stored = localStorage.getItem(cfg.storageKey);
   if (stored !== null) {{
     try {{ return new Set(JSON.parse(stored)); }} catch (e) {{ /* fall through */ }}
   }}
-  return new Set(dflt);
+  return new Set(cfg.defaultExcluded);
 }}
 
 function saveExcluded(kind, excluded) {{
-  const key = kind === "project" ? STORAGE_KEY_PROJECT : STORAGE_KEY_MODEL;
-  localStorage.setItem(key, JSON.stringify(Array.from(excluded)));
+  localStorage.setItem(FILTER_KINDS[kind].storageKey, JSON.stringify(Array.from(excluded)));
 }}
 
 function sum(arr, key) {{ return arr.reduce((a, r) => a + (r[key] || 0), 0); }}
@@ -1451,8 +1514,10 @@ function computeCutoffDate(dateFilter) {{
 function render() {{
   const excludedProjects = loadExcluded("project");
   const excludedModels = loadExcluded("model");
+  const excludedProviders = loadExcluded("provider");
   document.querySelectorAll(".proj-check").forEach(cb => {{ cb.checked = !excludedProjects.has(cb.value); }});
   document.querySelectorAll(".model-check").forEach(cb => {{ cb.checked = !excludedModels.has(cb.value); }});
+  document.querySelectorAll(".provider-check").forEach(cb => {{ cb.checked = !excludedProviders.has(cb.value); }});
 
   const metric = getMetric();
   const valKey = metric === "cost" ? "estimated_cost" : "total_tokens";
@@ -1476,7 +1541,14 @@ function render() {{
       : ("Showing " + (cutoffDateStr || "?") + " \u2192 " + (GLOBAL_MAX_DATE || "?") + " (last " + dateFilter + " days of data)");
   }}
 
-  const filtered = RAW.filter(r => !excludedProjects.has(r.project) && !excludedModels.has(r.model) && (!cutoffDateStr || (r.date && r.date >= cutoffDateStr)));
+  // Single choke point for every project/model/provider/date filter - every
+  // KPI, chart, insight, trend, value-for-money, work-pattern view, task
+  // table, and composition chart below reads exclusively from `filtered`
+  // (never RAW directly), and each condition here is independent (AND, not
+  // OR): a row must pass ALL FOUR to be included. In particular, a model
+  // whose own checkbox is still checked is still excluded if its inferred
+  // provider is unchecked - see the Provider panel's hint text.
+  const filtered = RAW.filter(r => !excludedProjects.has(r.project) && !excludedModels.has(r.model) && !excludedProviders.has(r.provider) && (!cutoffDateStr || (r.date && r.date >= cutoffDateStr)));
 
   // KPIs (always show both tokens and cost, regardless of chart metric toggle)
   const totalTokens = sum(filtered, "total_tokens");
@@ -1527,6 +1599,29 @@ function render() {{
     customdata: modelEntries.map(m => fmtVal(m[1])),
     hovertemplate: "%{{label}}: %{{value:,}} " + unitLabel + " (%{{percent}})<extra></extra>",
   }}], {{ title: {{ text: (metric === "cost" ? "Cost Share by Model" : "Token Share by Model") + " (selected)" }}, showlegend: false }}, {{ responsive: true }});
+
+  // Provider Mix - same `filtered` array (so it always reflects the current
+  // project/model/provider/date selection, including the Provider panel
+  // itself), grouped by the `provider` field derived once at build time by
+  // provider_classifier.py (never recomputed here). Uses PROVIDER_COLORS
+  // (fixed per provider name) rather than MODEL_COLORS/MODEL_PALETTE, so
+  // this chart's legend never overlaps or gets confused with the per-model
+  // pie above. "Other / Unknown" is rendered like any other provider - it is
+  // only absent from the chart when there are literally zero matching rows.
+  const byProvider = groupSum(filtered, r => r.provider, valKey);
+  const providerEntries = Array.from(byProvider.entries()).sort((a, b) => b[1] - a[1]);
+  Plotly.react("fig_provider", [{{
+    labels: providerEntries.map(p => p[0]), values: providerEntries.map(p => p[1]), type: "pie", hole: 0.4,
+    marker: {{ colors: providerEntries.map(p => PROVIDER_COLORS[p[0]] || "#8c959f") }},
+    textinfo: "label+percent", texttemplate: "%{{label}}<br>%{{percent}} (%{{customdata}})",
+    customdata: providerEntries.map(p => fmtVal(p[1])),
+    hovertemplate: "%{{label}}: %{{value:,}} " + unitLabel + " (%{{percent}})<extra></extra>",
+  }}], {{ title: {{ text: (metric === "cost" ? "Cost Share by Provider" : "Token Share by Provider") + " (inferred from model name, selected)" }}, showlegend: false }}, {{ responsive: true }});
+  // Test-only hooks (mirrors the existing window.__debugValueEntries
+  // pattern below) - let the Node DOM harness/pytest assert on the actual
+  // filtered/aggregated data without needing a real Plotly renderer.
+  window.__debugProviderEntries = providerEntries;
+  window.__debugFilteredCount = filtered.length;
 
   // Overview insights: call out the top project and top model in plain language
   const insightOverview = document.getElementById("insight-overview");
@@ -1829,7 +1924,7 @@ function render() {{
 }}
 
 function setAll(kind, checked) {{
-  const order = kind === "project" ? PROJECT_ORDER : MODEL_ORDER;
+  const order = FILTER_KINDS[kind].order;
   const excluded = checked ? new Set() : new Set(order);
   saveExcluded(kind, excluded);
   render();
@@ -1847,7 +1942,7 @@ function applySidebarState(collapsed) {{
   const btn = document.getElementById("sidebar-toggle");
   layout.classList.toggle("sidebar-collapsed", collapsed);
   icon.innerHTML = collapsed ? "&raquo;" : "&laquo;";
-  btn.title = collapsed ? "Show the Projects and Models filter panel" : "Hide the Projects and Models filter panel";
+  btn.title = collapsed ? "Show the Projects, Models, and Providers filter panel" : "Hide the Projects, Models, and Providers filter panel";
 }}
 
 function toggleSidebar() {{
@@ -1860,9 +1955,7 @@ function toggleSidebar() {{
 }}
 
 document.addEventListener("change", (e) => {{
-  let kind = null;
-  if (e.target.classList.contains("proj-check")) kind = "project";
-  else if (e.target.classList.contains("model-check")) kind = "model";
+  const kind = Object.keys(FILTER_KINDS).find(k => e.target.classList.contains(FILTER_KINDS[k].checkboxClass));
   if (!kind) return;
   const excluded = loadExcluded(kind);
   if (e.target.checked) excluded.delete(e.target.value); else excluded.add(e.target.value);
