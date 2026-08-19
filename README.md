@@ -170,8 +170,16 @@ complete picture.
      last-modified time** to order it against other exports — a best-effort
      approximation (a copied/re-saved file's mtime may not match its true
      original export time), also always accompanied by a `WARNING:`. A CSV
+     with only **one** of `export_format_version`/`exported_at` present (a
+     shape `extract_usage.py` never itself produces, since it always writes
+     both columns together) is *not* treated as an ordinary legacy file —
+     it gets its own explicit `WARNING:` calling out the specific mismatch,
+     rather than being silently folded into the "both absent" case above.
+     `export_format_version` still back-fills to the legacy sentinel `"1"`
+     when it's the missing column; `exported_at` still falls back to OS
+     mtime when it's the missing one. A CSV
      with an `export_format_version` value this tool doesn't recognize
-     (i.e. not `"1"` or `"2"`) is still loaded best-effort, with a
+     (i.e. not `"1"`, `"2"`, or `"3"`) is still loaded best-effort, with a
      `WARNING:` about the unrecognized version.
    - **Deduplication policy (deterministic, timestamp-based):** overlapping
      exports are resolved using each row's actual `exported_at` (or the
@@ -432,10 +440,14 @@ A chart in the Composition section shows raw `input_tokens`,
 every other chart, it always shows token counts — it does not switch to
 cost with the Tokens/Cost toggle, since these five categories aren't
 individually costed in this data model (see **Token and cost
-definitions**). A note beneath the chart states how many calls in the
-current selection actually have this category breakdown recorded; calls
-from an export that predates it are excluded from the totals, not counted
-as zero.
+definitions**). A row only contributes to these totals when it has **all
+five** categories recorded; a row missing even one of them (a partially
+migrated or hand-edited export, as well as an export that predates the
+breakdown entirely) is excluded from the totals rather than partially
+folded in — partial data would otherwise silently understate whichever
+categories that row is missing. A note beneath the chart states how many
+calls in the current selection actually have the full breakdown recorded;
+the rest are excluded from the totals, not counted as zero.
 
 ### Project & model filters
 
@@ -524,16 +536,22 @@ shown per bar so you can judge how much data backs each ranking. This is a
 **pricing-efficiency ratio only** — it does not measure output quality,
 accuracy, or how many tokens a model actually needs to do a task well, and
 a model used mostly at high reasoning-effort will look worse here even if
-its answers are better (reasoning tokens cost more). Models are only
-ranked here when they have some confirmed cost for the current selection
-(a model with zero confirmed cost is excluded rather than shown with an
-infinite or misleadingly "free" ratio). A model whose cost-data coverage
-is under 100% gets a `*` suffix on its label, a `⚠` marker on its bar, and
-a hover note that its ratio is computed only from the calls with confirmed
-cost and likely **overstates** its value. An auto-generated callout names
-the best/worst-value model (restricted to models with 5+ calls, to avoid
-noise from one-off usage), and adds a caveat when either side has
-incomplete cost-data coverage.
+its answers are better (reasoning tokens cost more). Both the token
+numerator and cost denominator are computed **only from rows whose cost
+data is fully confirmed** (`cost_data_calls` covers every one of that row's
+`calls`) — a row with partial, missing, or unknown cost coverage is
+excluded from the ratio entirely (never just from the cost side), so a
+row's uncosted tokens can never inflate another row's confirmed-cost ratio.
+Models are only ranked here when they have at least one such fully-confirmed
+row with nonzero cost (a model with zero confirmed cost is excluded rather
+than shown with an infinite or misleadingly "free" ratio). A model whose
+**overall** cost-data coverage (across all of its rows, not just the ones
+used in the ratio) is under 100% still gets a `*` suffix on its label, a `⚠`
+marker on its bar, and a hover note that the ratio only reflects its
+fully-confirmed rows and may not represent its full usage. An
+auto-generated callout names the best/worst-value model (restricted to
+models with 5+ calls, to avoid noise from one-off usage), and adds a caveat
+when either side has incomplete cost-data coverage.
 
 ### Narrative layout & design
 

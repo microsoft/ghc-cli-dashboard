@@ -245,14 +245,20 @@ def _apply_export_metadata(df: pd.DataFrame, file_name: str) -> pd.DataFrame:
       - Both `export_format_version` and `exported_at` present: the file's
         `exported_at` values are parsed (assumed/forced to UTC) and used
         directly as `_export_ts`.
-      - Either column missing or every `exported_at` value blank/unparseable:
-        this file predates export metadata (or is otherwise incomplete) -
-        printed as a WARNING (not a silent default), and `_export_ts` falls
-        back to the file's OS last-modified time for every row in the file.
-        `export_format_version` itself is back-filled with the legacy
-        sentinel "1" when absent.
+      - Both columns missing entirely: this file predates export metadata -
+        printed as a WARNING (not a silent default), `_export_ts` falls back
+        to the file's OS last-modified time for every row, and
+        `export_format_version` is back-filled with the legacy sentinel "1".
+      - Exactly ONE of the two columns is present (an inconsistent/unexpected
+        export shape - this project always writes both together starting at
+        version "2"): a WARNING is printed explicitly calling out the
+        mismatch, rather than silently back-filling as if this were an
+        ordinary legacy export. `export_format_version` is still back-filled
+        with the legacy sentinel "1" when it's the missing one; `_export_ts`
+        still falls back to OS last-modified time when `exported_at` is the
+        missing one (the file's own `exported_at` values are used otherwise).
       - `export_format_version` present but not one of the versions this
-        tool knows about (currently {"1", "2"}): treated best-effort as
+        tool knows about (currently {"1", "2", "3"}): treated best-effort as
         equivalent to the current version (whatever columns are present are
         used), with a WARNING noting the unrecognized value.
     """
@@ -274,6 +280,13 @@ def _apply_export_metadata(df: pd.DataFrame, file_name: str) -> pd.DataFrame:
         return df
 
     if not has_version_col:
+        print(
+            f"WARNING: {file_name}: has 'exported_at' but no 'export_format_version' column - "
+            f"an inconsistent/unexpected export shape (this project always writes both columns "
+            f"together, starting at version '2'). Treating as a legacy (schema version "
+            f"'{LEGACY_EXPORT_FORMAT_VERSION}') export for versioning purposes, while still using "
+            f"this file's own 'exported_at' values (parsed below) to order it for deduplication."
+        )
         df["export_format_version"] = LEGACY_EXPORT_FORMAT_VERSION
     else:
         df["export_format_version"] = df["export_format_version"].astype("string").fillna(LEGACY_EXPORT_FORMAT_VERSION)
@@ -1053,6 +1066,10 @@ const RAW = {raw_json};
 // nano_aiu -> USD: verified against GitHub's published per-token Copilot pricing
 // (1 AI credit = $0.01; total_nano_aiu / 1e9 = credits, so /1e11 = USD).
 const NANO_AIU_TO_USD = 1e-11;
+// The five independent token sub-category counters that make up a "complete"
+// per-row breakdown - see has_token_categories below and TOKEN_CATEGORIES
+// further down (which drives the Token Composition chart itself).
+const TOKEN_CATEGORY_KEYS = ["input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens"];
 RAW.forEach(r => {{
   r.estimated_cost = (r.total_nano_aiu || 0) * NANO_AIU_TO_USD;
   // Cost-coverage classification for this row, from cost_data_calls (a
@@ -1067,10 +1084,16 @@ RAW.forEach(r => {{
     : r.cost_data_calls <= 0 ? "none"
     : r.cost_data_calls >= r.calls ? "full"
     : "partial";
-  // Whether this row has a token-category breakdown at all (input/output/
+  // Whether this row has a COMPLETE token-category breakdown (input/output/
   // cache-read/cache-write/reasoning) - legacy exports never recorded these,
-  // so absence must not be read as "zero cache/reasoning tokens used".
-  r.has_token_categories = r.input_tokens !== null && r.input_tokens !== undefined;
+  // so absence must not be read as "zero cache/reasoning tokens used". A row
+  // is only included in the composition totals when ALL FIVE categories are
+  // present; a row with only some categories present (e.g. a partially
+  // migrated/hand-edited export) is a genuinely incomplete breakdown and
+  // would otherwise silently understate whichever categories are missing -
+  // it is excluded here just like a row with none of them, and counted in
+  // excludedCalls by computeTokenComposition() below.
+  r.has_token_categories = TOKEN_CATEGORY_KEYS.every(k => r[k] !== null && r[k] !== undefined);
 }});
 
 const PROJECT_ORDER = {project_order_json};
@@ -1597,20 +1620,29 @@ function render() {{
   // Value for money: tokens per dollar by model (aggregate, not per-row average, so heavy
   // users of a model don't get diluted/inflated by one-off outlier rows). This is a pricing
   // ratio, not a quality measure - see the info-icon tooltip on the card for the full caveat.
-  // Robustness: models are only ranked here when they have SOME confirmed cost (modelCost >
-  // 0), which also rules out a divide-by-zero in the tpd ratio below. A model can still show
-  // modelCost > 0 while its cost coverage is <100% (some of its calls have confirmed cost,
-  // others are missing/unknown) - in that case its ratio is computed only from the tokens/cost
-  // it actually has confirmed, but the bar is flagged with a coverage note rather than presented
-  // as an equally-reliable comparison, per the "no divide-by-zero, no free-looking cost" requirement.
+  // Numerator/denominator safety: total_tokens and estimated_cost are both aggregated PER
+  // ROW (over that row's `calls`), so a row's cost coverage can only be trusted to cover its
+  // own tokens as a whole - a "partial" row (some but not all of its calls have confirmed
+  // cost) cannot be safely split into a "confirmed" slice of tokens vs cost without assuming
+  // an even distribution across calls that isn't guaranteed. To avoid inflating tok/$ with
+  // tokens whose matching cost isn't actually confirmed, the ratio is built ONLY from rows
+  // with cost_coverage === "full" (every call in that row has confirmed cost) - "none"/
+  // "partial"/"unknown" rows are excluded from both the numerator and the denominator
+  // entirely, never just one side. Models are only ranked here when they have SOME full-
+  // coverage rows with confirmed cost (modelCost > 0), which also rules out a divide-by-zero
+  // in the tpd ratio below. A model can still be ranked while its OVERALL cost coverage
+  // (across every one of its rows, not just the full-coverage ones used in the ratio) is
+  // <100% - in that case the ratio is accurate for the confirmed subset it's computed from,
+  // but is flagged with a coverage note since it may not represent that model's full usage.
   const modelRows = new Map();
   for (const r of filtered) {{
     if (!modelRows.has(r.model)) modelRows.set(r.model, []);
     modelRows.get(r.model).push(r);
   }}
-  const modelTokens = groupSum(filtered, r => r.model, "total_tokens");
-  const modelCost = groupSum(filtered, r => r.model, "estimated_cost");
-  const modelCalls = groupSum(filtered, r => r.model, "calls");
+  const fullCoverageRows = filtered.filter(r => r.cost_coverage === "full");
+  const modelTokens = groupSum(fullCoverageRows, r => r.model, "total_tokens");
+  const modelCost = groupSum(fullCoverageRows, r => r.model, "estimated_cost");
+  const modelCalls = groupSum(fullCoverageRows, r => r.model, "calls");
   const valueEntries = Array.from(modelTokens.keys())
     .filter(m => (modelCost.get(m) || 0) > 0)
     .map(m => {{
@@ -1633,10 +1665,10 @@ function render() {{
     text: valueEntries.map(v => fmtCompact(v.tpd) + " tok/$ (" + fmt(v.calls) + " calls)" + (v.coverageComplete ? "" : " \u26a0")),
     textposition: "outside", cliponaxis: false,
     hovertemplate: valueEntries.map(v => (v.model + ": %{{x:,.0f}} tokens per $ spent" +
-      (v.coverageComplete ? "" : " (cost data incomplete for this model - ratio computed only from calls with confirmed cost; likely OVERSTATES value)")) + "<extra></extra>"),
+      (v.coverageComplete ? "" : " (this model also has some rows with incomplete cost data - ratio above is computed only from this model's rows with fully confirmed cost, and may not reflect its full usage)")) + "<extra></extra>"),
   }}], {{
     title: {{ text: "Value for Money \u2014 Tokens per Dollar by Model" }},
-    xaxis: {{ title: {{ text: "Tokens per USD of estimated cost (higher = cheaper per token). * = model has incomplete cost-data coverage; ratio may overstate value." }} }},
+    xaxis: {{ title: {{ text: "Tokens per USD of estimated cost (higher = cheaper per token), computed only from calls with fully confirmed cost data. * = model also has some rows with incomplete cost-data coverage not reflected in this ratio." }} }},
     yaxis: {{ title: {{ text: "Model (ranked highest value first)" }}, autorange: "reversed" }},
     margin: {{ l: 160, r: 140 }},
   }}, {{ responsive: true }});

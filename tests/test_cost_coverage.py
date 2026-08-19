@@ -224,16 +224,28 @@ def test_token_composition_totals_match_input_data(tmp_path):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.skipif(NODE is None, reason="Node.js not available on PATH")
-def test_model_with_zero_confirmed_cost_excluded_from_value_ranking(tmp_path):
-    """A model whose every call has confirmed-zero/no cost must not appear in
-    the Value-for-Money ranking with an infinite or undefined tok/$ ratio -
-    it must simply be excluded (existing modelCost > 0 guard), and no NaN/
-    Infinity should leak into the debug-exposed ranking."""
+def test_model_with_confirmed_zero_cost_excluded_from_value_ranking(tmp_path):
+    """A model whose every call has CONFIRMED (cost_data_calls == calls) zero
+    cost (total_nano_aiu == 0.0) must not appear in the Value-for-Money
+    ranking with an infinite or undefined tok/$ ratio - it must simply be
+    excluded (existing modelCost > 0 guard), and no NaN/Infinity should leak
+    into the debug-exposed ranking.
+
+    Crucially, "confirmed zero cost" (cost_data_calls == calls, i.e. full
+    coverage, and the cost genuinely is 0) is a DISTINCT state from "no
+    coverage at all" (cost_data_calls == 0, i.e. none of these calls have
+    confirmed cost data - see test_partial_coverage_reports_warn_kpi_and_banner
+    for that case). Both models here have full coverage, so the OVERALL
+    coverage banner must report 100% confirmed/"good", not a partial/warn
+    state - only the ranking itself excludes the zero-cost model, to avoid a
+    divide-by-zero, not the coverage accounting."""
     rows = [
         _row(project="Alpha", model="gpt-4o", calls=5, total_tokens=150, total_nano_aiu=1000.0,
              cost_data_calls=5),
+        # Every one of this model's 5 calls has CONFIRMED cost data
+        # (cost_data_calls == calls) - it just happens to be genuinely free.
         _row(project="Beta", model="free-model", calls=5, total_tokens=500, total_nano_aiu=0.0,
-             cost_data_calls=0),
+             cost_data_calls=5),
     ]
     _, out_path = _build(tmp_path, rows)
     payload = _run_harness(out_path)
@@ -246,9 +258,20 @@ def test_model_with_zero_confirmed_cost_excluded_from_value_ranking(tmp_path):
         assert math.isfinite(v["tpd"])
         assert v["tpd"] >= 0
 
-    # Rendering must not have thrown, and the coverage KPI must reflect the
-    # blended coverage (5 confirmed of 10 total => 50%), not a divide-by-zero
-    # artifact like NaN%/Infinity%.
+    # Both models have FULL (not partial/none) coverage, so the blended
+    # coverage must be 100% confirmed, not a partial/warn state - distinct
+    # from a model with no confirmed cost data at all.
+    coverage = payload["coverage"]
+    assert coverage["isComplete"] is True
+    assert coverage["pctConfirmed"] == 100
+    assert coverage["missingKnownCalls"] == 0
+
+    coverage_banner = payload["elements"]["insight-coverage"]["innerHTML"]
+    assert "insight good" in coverage_banner
+    assert "100%" in coverage_banner
+
+    # Rendering must not have thrown, and the coverage KPI must reflect full
+    # confirmed coverage, not a divide-by-zero artifact like NaN%/Infinity%.
     kpi_html = payload["elements"]["kpi-row"]["innerHTML"]
     assert "NaN" not in kpi_html
     assert "Infinity" not in kpi_html
@@ -320,6 +343,109 @@ def test_value_for_money_caveat_appears_when_coverage_incomplete(tmp_path):
     value_entries = payload["valueEntries"]
     partial = [v for v in value_entries if v["model"] == "gpt-4o"]
     assert partial and partial[0]["coverageComplete"] is False
+
+
+# ---------------------------------------------------------------------------
+# Value-for-money numerator/denominator consistency (no inflated ratio from
+# partial-coverage models)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(NODE is None, reason="Node.js not available on PATH")
+def test_value_for_money_ratio_excludes_uncosted_tokens_from_numerator(tmp_path):
+    """Regression test for the "inflated tok/$ from partial-coverage models"
+    finding: a row's total_tokens must never be mixed into the tok/$
+    numerator unless that SAME row's cost is fully confirmed
+    (cost_coverage === "full") - total_tokens and estimated_cost are both
+    computed from rows with confirmed usable cost, never numerator from
+    every row and denominator from only the confirmed ones."""
+    rows = [
+        # Full coverage: 10 calls, 1000 tokens, $1.00 confirmed cost.
+        _row(project="Alpha", model="gpt-4o", calls=10, total_tokens=1000,
+             total_nano_aiu=1e11, cost_data_calls=10),
+        # No coverage: 10 MORE calls, 9000 MORE tokens, with NO confirmed
+        # cost at all. Before the fix, these 9000 tokens were folded into
+        # the ratio's numerator anyway (total_tokens summed across ALL
+        # rows) while the denominator only reflected the $1.00 confirmed
+        # above - inflating the ratio 10x (10,000 tok/$ instead of the
+        # true 1,000 tok/$ for the confirmed portion).
+        _row(project="Alpha", model="gpt-4o", calls=10, total_tokens=9000,
+             total_nano_aiu=0.0, cost_data_calls=0),
+    ]
+    _, out_path = _build(tmp_path, rows)
+    payload = _run_harness(out_path)
+
+    value_entries = payload["valueEntries"]
+    gpt4o = next(v for v in value_entries if v["model"] == "gpt-4o")
+    # Ratio and call count must come ONLY from the full-coverage row: 1000
+    # tokens / $1.00 == 1,000 tok/$ over 10 calls - never 10,000 tok/$ over
+    # 20 calls (which would mean the uncosted row's tokens leaked in).
+    assert gpt4o["tpd"] == pytest.approx(1000.0)
+    assert gpt4o["calls"] == 10
+    # The model's OVERALL coverage (across both rows) is still incomplete,
+    # so it must still be flagged even though the ratio itself is now honest.
+    assert gpt4o["coverageComplete"] is False
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js not available on PATH")
+def test_value_for_money_ratio_matches_across_partial_and_full_coverage_models(tmp_path):
+    """A model with 100% confirmed coverage and a model with partial coverage
+    (but at least one fully-confirmed row) must both report a tok/$ ratio
+    computed strictly from tokens/cost pairs that came from the SAME row -
+    i.e. the numerator and denominator are never sourced from different
+    subsets of rows."""
+    rows = [
+        # gpt-4o-mini: fully confirmed across its only row - unaffected by
+        # the fix (a single full-coverage row is its own safe subset).
+        _row(project="Beta", model="gpt-4o-mini", calls=4, total_tokens=400,
+             total_nano_aiu=4e10, cost_data_calls=4),
+    ]
+    _, out_path = _build(tmp_path, rows)
+    payload = _run_harness(out_path)
+
+    value_entries = payload["valueEntries"]
+    mini = next(v for v in value_entries if v["model"] == "gpt-4o-mini")
+    assert mini["tpd"] == pytest.approx(1000.0)
+    assert mini["calls"] == 4
+    assert mini["coverageComplete"] is True
+
+
+# ---------------------------------------------------------------------------
+# Token composition requires ALL FIVE categories present, not just input
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(NODE is None, reason="Node.js not available on PATH")
+def test_token_composition_requires_all_five_categories_to_include_row(tmp_path):
+    """A row with only SOME token-category columns populated (e.g. input/
+    output present but cache_read/cache_write/reasoning missing - a
+    partially migrated or hand-edited export) must be treated the same as a
+    row with NONE of them: excluded from composition totals entirely, not
+    partially folded in (which would silently understate whichever
+    categories that row is missing as if they were legitimately zero)."""
+    rows = [
+        _row(project="Alpha", model="gpt-4o", calls=5, total_tokens=150, total_nano_aiu=1000.0,
+             cost_data_calls=5, input_tokens=100, output_tokens=50, cache_read_tokens=10,
+             cache_write_tokens=5, reasoning_tokens=2),
+        # Partial breakdown: input/output present, the other three columns
+        # absent entirely for this row.
+        _row(project="Beta", model="gpt-4o-mini", calls=4, total_tokens=80, total_nano_aiu=400.0,
+             cost_data_calls=4, input_tokens=60, output_tokens=20),
+    ]
+    _, out_path = _build(tmp_path, rows)
+    payload = _run_harness(out_path)
+
+    composition = payload["composition"]
+    # Only the complete (all-five) row contributes to totals - the partial
+    # row's input/output tokens must NOT leak in.
+    assert composition["totals"]["input_tokens"] == 100
+    assert composition["totals"]["output_tokens"] == 50
+    assert composition["totals"]["cache_read_tokens"] == 10
+    assert composition["totals"]["cache_write_tokens"] == 5
+    assert composition["totals"]["reasoning_tokens"] == 2
+    assert composition["includedCalls"] == 5
+    assert composition["excludedCalls"] == 4
+
+    composition_note = payload["elements"]["composition-note"]["innerHTML"]
+    assert "5 of 9 calls" in composition_note
 
 
 # ---------------------------------------------------------------------------
