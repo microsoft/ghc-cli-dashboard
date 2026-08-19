@@ -195,3 +195,87 @@ def test_extraction_end_to_end_against_synthetic_db(tmp_path, monkeypatch, capsy
     # No new leftover temp snapshot directories after a normal run.
     after = set(glob.glob(os.path.join(tempfile.gettempdir(), "copilot_usage_*")))
     assert after - before == set()
+
+
+# ---------------------------------------------------------------------------
+# cost_data_calls: cost-coverage counter (full / partial / no coverage)
+# ---------------------------------------------------------------------------
+#
+# `cost_data_calls` counts how many of the underlying assistant_usage_events
+# rows folded into one exported (session, day, model, reasoning_effort) row
+# had a non-NULL total_nano_aiu. It must never be confused with the SUM
+# itself (`total_nano_aiu`): a group can have total_nano_aiu == 0 either
+# because every contributing call was confirmed free/costless, or because
+# none of them recorded cost data at all - cost_data_calls is what tells
+# those two apart.
+
+def _db_with_events(path: str, events: list) -> None:
+    """events: list of (id, total_nano_aiu_or_None) - everything else fixed
+    to one session/model/day so all events fold into a single export row."""
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "CREATE TABLE sessions (id TEXT PRIMARY KEY, repository TEXT, cwd TEXT, summary TEXT)"
+    )
+    conn.execute(
+        """CREATE TABLE assistant_usage_events (
+            id INTEGER PRIMARY KEY, session_id TEXT, created_at TEXT, model TEXT,
+            reasoning_effort TEXT, input_tokens INTEGER, output_tokens INTEGER,
+            cache_read_tokens INTEGER, cache_write_tokens INTEGER,
+            reasoning_tokens INTEGER, total_nano_aiu INTEGER
+        )"""
+    )
+    conn.execute("INSERT INTO sessions VALUES ('s1', 'org/repo', '/home/user/repo', 'Fix bug')")
+    for event_id, cost in events:
+        conn.execute(
+            "INSERT INTO assistant_usage_events VALUES (?, 's1', '2026-01-01T10:00:00Z', 'gpt-4o', "
+            "'medium', 10, 5, 0, 0, 0, ?)",
+            (event_id, cost),
+        )
+    conn.commit()
+    conn.close()
+
+
+def _extract_to_df(tmp_path, monkeypatch, events):
+    import pandas as pd
+
+    db_path = str(tmp_path / "session-store.db")
+    _db_with_events(db_path, events)
+    out_path = str(tmp_path / "out.csv")
+    monkeypatch.setattr(
+        sys, "argv",
+        ["extract_usage.py", "--db", db_path, "--out", out_path, "--user-label", "tester"],
+    )
+    extract_usage.main()
+    return pd.read_csv(out_path)
+
+
+def test_cost_data_calls_full_coverage(tmp_path, monkeypatch):
+    df = _extract_to_df(tmp_path, monkeypatch, [(1, 1_000_000_000), (2, 2_000_000_000)])
+    assert len(df) == 1
+    row = df.iloc[0]
+    assert row["calls"] == 2
+    assert row["cost_data_calls"] == 2
+    assert row["total_nano_aiu"] == 3_000_000_000
+
+
+def test_cost_data_calls_partial_coverage(tmp_path, monkeypatch):
+    df = _extract_to_df(tmp_path, monkeypatch, [(1, 1_000_000_000), (2, None)])
+    assert len(df) == 1
+    row = df.iloc[0]
+    assert row["calls"] == 2
+    # Only 1 of the 2 calls had cost data - a real, partial coverage gap.
+    assert row["cost_data_calls"] == 1
+    # SQL SUM ignores the NULL - this total is real but incomplete, which is
+    # exactly why cost_data_calls (< calls) must be checked alongside it.
+    assert row["total_nano_aiu"] == 1_000_000_000
+
+
+def test_cost_data_calls_no_coverage(tmp_path, monkeypatch):
+    df = _extract_to_df(tmp_path, monkeypatch, [(1, None), (2, None)])
+    assert len(df) == 1
+    row = df.iloc[0]
+    assert row["calls"] == 2
+    assert row["cost_data_calls"] == 0
+    # Written as 0 by SUM-of-nothing convention, but callers must treat this
+    # as "unknown cost", never "confirmed free", because cost_data_calls == 0.
+    assert row["total_nano_aiu"] == 0

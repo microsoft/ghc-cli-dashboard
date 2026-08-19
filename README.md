@@ -77,8 +77,13 @@ complete picture.
   run on Windows so far.
 - **Cost estimates depend on `total_nano_aiu` being populated per row.**
   On the one install tested, coverage was 100%, but this hasn't been
-  verified against older CLI versions, and any gap would silently
-  *understate* cost with no warning shown in the dashboard.
+  verified against older CLI versions. Unlike earlier versions of this
+  tool, a coverage gap is no longer silent: `extract_usage.py` (format
+  version `"3"`+) records a `cost_data_calls` counter per row so
+  `dashboard.py` can distinguish "confirmed no cost data" from "unknown
+  (export predates this tracking)" and surface a visible **Cost data
+  coverage** KPI plus a warning banner whenever coverage is under 100% —
+  see **Token and cost definitions** below.
 - **Org/enterprise telemetry policies are unverified.** If an organization
   disables local usage logging, `session-store.db` may be missing or
   empty — this tool has no way to detect or flag that; it will just look
@@ -117,11 +122,13 @@ complete picture.
      of a raw SQLite exception.
    - **Export metadata / schema version:** every row also carries
      `export_format_version` and `exported_at`. `export_format_version` is a
-     single, monotonically increasing integer string (currently `"2"`) that
+     single, monotonically increasing integer string (currently `"3"`) that
      identifies the *shape* of the CSV — it's bumped whenever a change would
      matter to a consumer doing cross-export deduplication or column
      presence checks (this is a plain integer, not semver, since
-     `extract_usage.py` is the format's only writer). `exported_at` is one
+     `extract_usage.py` is the format's only writer). Version `"3"` added
+     `cost_data_calls` — see **Token and cost definitions** below.
+     `exported_at` is one
      timezone-aware ISO-8601 UTC timestamp, shared by every row in the file,
      recording when *that run* of `extract_usage.py` produced the file (not
      when any individual usage event happened). `dashboard.py` uses
@@ -141,7 +148,14 @@ complete picture.
      (`session_id`, `reasoning_effort`, `total_nano_aiu`) are still
      accepted; each missing optional column is back-filled with a
      documented default (`None`, `"n/a"`, `0.0` respectively) rather than
-     raising. `calls`, `total_tokens`, and `total_nano_aiu` (when present)
+     raising. Six further optional columns —
+     `cost_data_calls`, `input_tokens`, `output_tokens`, `cache_read_tokens`,
+     `cache_write_tokens`, `reasoning_tokens` — back-fill to *unknown*
+     (`null`, not `0`) when the whole column is absent (a pre-format-`"3"`
+     export), and individual blank cells within an otherwise-present column
+     are likewise preserved as unknown rather than coerced to zero; see
+     **Token and cost definitions** below for what "unknown" means here.
+     `calls`, `total_tokens`, and `total_nano_aiu` (when present)
      must be finite, non-negative numbers, and `date` must parse as a
      valid date — invalid values are rejected with an `ERROR:` naming the
      file, column, and CSV row number(s), rather than being silently
@@ -156,8 +170,16 @@ complete picture.
      last-modified time** to order it against other exports — a best-effort
      approximation (a copied/re-saved file's mtime may not match its true
      original export time), also always accompanied by a `WARNING:`. A CSV
+     with only **one** of `export_format_version`/`exported_at` present (a
+     shape `extract_usage.py` never itself produces, since it always writes
+     both columns together) is *not* treated as an ordinary legacy file —
+     it gets its own explicit `WARNING:` calling out the specific mismatch,
+     rather than being silently folded into the "both absent" case above.
+     `export_format_version` still back-fills to the legacy sentinel `"1"`
+     when it's the missing column; `exported_at` still falls back to OS
+     mtime when it's the missing one. A CSV
      with an `export_format_version` value this tool doesn't recognize
-     (i.e. not `"1"` or `"2"`) is still loaded best-effort, with a
+     (i.e. not `"1"`, `"2"`, or `"3"`) is still loaded best-effort, with a
      `WARNING:` about the unrecognized version.
    - **Deduplication policy (deterministic, timestamp-based):** overlapping
      exports are resolved using each row's actual `exported_at` (or the
@@ -229,6 +251,62 @@ complete picture.
        actually belongs to. There is no purely dimensional fix for that;
        re-exporting with a `session_id`-bearing `extract_usage.py` is the
        only way to fully disambiguate.
+
+## Token and cost definitions
+
+The dashboard's token/cost figures rely on several distinct, non-overlapping
+data points from `assistant_usage_events`. Getting the relationships wrong
+is the single easiest way to misread this data, so they're stated
+explicitly here:
+
+- **`total_tokens` = `input_tokens + output_tokens` ONLY.** It does **not**
+  include cache-read, cache-write, or reasoning tokens. This is what every
+  "tokens" chart, KPI, and the Tokens/Cost toggle's "Tokens" mode sum.
+- **`cache_read_tokens`, `cache_write_tokens`, and `reasoning_tokens` are
+  separate, independent additive counters** — not subsets of
+  `total_tokens`, and not guaranteed to sum to anything in particular
+  together with it. The **Token Composition by Category** chart (in the
+  Composition section) is the only place these five categories are shown
+  side by side; it always displays raw token counts (it ignores the
+  Tokens/Cost toggle), because these categories are not individually
+  costed in this data model — there's no per-category dollar figure to
+  switch to.
+- **`total_nano_aiu` is the cost basis, and is *not* derived from, or
+  necessarily proportional to, displayed input+output token counts.** It's
+  an independent, per-category-weighted accumulator (e.g. cached input is
+  billed differently from fresh input) recorded by Copilot CLI itself.
+  `estimated_cost_usd = total_nano_aiu / 1e11` (see **Estimated cost ($)**
+  below) is always computed from this field, never approximated from
+  token counts.
+- **`cost_data_calls` is a coverage counter, not a cost figure.** Each
+  aggregated row also carries a count of how many of its underlying calls
+  had a non-null `total_nano_aiu` recorded (added in export format version
+  `"3"`). `dashboard.py` uses it to classify the calls behind every
+  project/model/date selection into:
+  - **Full** — every call has confirmed cost data (`cost_data_calls >=
+    calls`).
+  - **Partial** — some, but not all, calls have confirmed cost data.
+  - **None (confirmed missing)** — `cost_data_calls == 0`: it's confirmed
+    these calls have no recorded cost, not merely unmeasured.
+  - **Unknown** — the row predates `cost_data_calls` entirely (export
+    format version before `"3"`, or a whole-column-absent legacy CSV). This
+    is deliberately **not** treated as "confirmed missing" or as `0`
+    coverage in the arithmetic sense — it's its own bucket, so a legacy
+    export is never misread as "this usage was free."
+  A **Cost data coverage** KPI shows the percentage of confirmed-cost
+  calls for the current selection, and a warning banner appears whenever
+  coverage is under 100%, explicitly stating that Est. cost and the
+  Value-for-Money chart likely *understate* true spend in that case — a
+  low or zero cost figure is never presented as proof of free/cheap usage.
+  Legacy CSVs written before this feature existed continue to load
+  without error; their `cost_data_calls` is `null` (unknown coverage), not
+  `0` or 100%.
+- **Pricing certainty is not overstated.** `total_nano_aiu`'s conversion to
+  USD list price was verified against GitHub's published per-token rates
+  for the CLI version/models this tool has actually been tested against
+  (see **Estimated cost ($)** below) — it is not re-derived or
+  independently re-verified by this change, and remains a *list-price
+  estimate*, not a literal invoice line.
 
 ## Privacy notes on the generated HTML
 
@@ -347,7 +425,29 @@ several models.)
 **Caveat:** this is a *list-price estimate*, not necessarily your literal
 invoice line — it doesn't account for included plan allowances, enterprise
 discounts, or currency differences. Use it for relative comparison (which
-project/model costs more), not as an exact bill.
+project/model costs more), not as an exact bill. It is also only as
+complete as the **Cost data coverage** KPI reports for the current
+selection — see **Token and cost definitions** above — and this KPI is
+displayed alongside Est. cost with a visible warning whenever coverage is
+under 100%, so an incomplete/missing cost figure is never mistaken for a
+confirmed cheap or free result.
+
+### Token Composition by Category
+
+A chart in the Composition section shows raw `input_tokens`,
+`output_tokens`, `cache_read_tokens`, `cache_write_tokens`, and
+`reasoning_tokens` totals side by side for the current selection. Unlike
+every other chart, it always shows token counts — it does not switch to
+cost with the Tokens/Cost toggle, since these five categories aren't
+individually costed in this data model (see **Token and cost
+definitions**). A row only contributes to these totals when it has **all
+five** categories recorded; a row missing even one of them (a partially
+migrated or hand-edited export, as well as an export that predates the
+breakdown entirely) is excluded from the totals rather than partially
+folded in — partial data would otherwise silently understate whichever
+categories that row is missing. A note beneath the chart states how many
+calls in the current selection actually have the full breakdown recorded;
+the rest are excluded from the totals, not counted as zero.
 
 ### Project & model filters
 
@@ -436,9 +536,22 @@ shown per bar so you can judge how much data backs each ranking. This is a
 **pricing-efficiency ratio only** — it does not measure output quality,
 accuracy, or how many tokens a model actually needs to do a task well, and
 a model used mostly at high reasoning-effort will look worse here even if
-its answers are better (reasoning tokens cost more). An auto-generated
-callout names the best/worst-value model (restricted to models with 5+
-calls, to avoid noise from one-off usage).
+its answers are better (reasoning tokens cost more). Both the token
+numerator and cost denominator are computed **only from rows whose cost
+data is fully confirmed** (`cost_data_calls` covers every one of that row's
+`calls`) — a row with partial, missing, or unknown cost coverage is
+excluded from the ratio entirely (never just from the cost side), so a
+row's uncosted tokens can never inflate another row's confirmed-cost ratio.
+Models are only ranked here when they have at least one such fully-confirmed
+row with nonzero cost (a model with zero confirmed cost is excluded rather
+than shown with an infinite or misleadingly "free" ratio). A model whose
+**overall** cost-data coverage (across all of its rows, not just the ones
+used in the ratio) is under 100% still gets a `*` suffix on its label, a `⚠`
+marker on its bar, and a hover note that the ratio only reflects its
+fully-confirmed rows and may not represent its full usage. An
+auto-generated callout names the best/worst-value model (restricted to
+models with 5+ calls, to avoid noise from one-off usage), and adds a caveat
+when either side has incomplete cost-data coverage.
 
 ### Narrative layout & design
 
@@ -494,6 +607,11 @@ figures are representative dashboard data.
   trusted sharing, since summaries can contain sensitive task detail.
 - Cost figures are list-price estimates derived from token counts — see
   the Estimated cost section above for the caveat on accuracy.
+- Cost-data coverage tracking (`cost_data_calls`, added in export format
+  version `"3"`) is a *presence* check on `total_nano_aiu`, not an
+  independent audit of pricing correctness — see **Token and cost
+  definitions** above for the full unknown/none/partial/full model and its
+  residual limits.
 
 ## Running tests
 
@@ -512,6 +630,10 @@ the safe-dedup vs. ambiguous-and-retained handling of legacy rows without
 `session_id`, including cross-version reconciliation between legacy and
 current rows for the same underlying session (see
 `tests/test_export_metadata.py` and `tests/test_dashboard_dedup.py`).
+`tests/test_cost_coverage.py` covers the cost-data coverage KPI/banner
+(full/partial/none/unknown), token-category composition totals, legacy
+(pre-`cost_data_calls`) CSVs, and divide-by-zero robustness in the
+Value-for-Money chart when cost data is missing or zero.
 
 ```powershell
 pip install -r requirements.txt -r requirements-dev.txt

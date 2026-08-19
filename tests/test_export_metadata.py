@@ -78,7 +78,11 @@ def test_extract_usage_emits_export_format_version_and_exported_at(tmp_path, mon
     assert "export_format_version" in df.columns
     assert "exported_at" in df.columns
     assert (df["export_format_version"].astype(str) == extract_usage.EXPORT_FORMAT_VERSION).all()
-    assert extract_usage.EXPORT_FORMAT_VERSION == "2"
+    # Bumped to "3" when `cost_data_calls` (a cost-coverage counter) was added -
+    # a new column is a shape change per this project's own versioning policy
+    # (see extract_usage.py's EXPORT_FORMAT_VERSION comment).
+    assert extract_usage.EXPORT_FORMAT_VERSION == "3"
+    assert "cost_data_calls" in df.columns
 
     # exported_at must be parseable and timezone-aware (not a naive timestamp).
     parsed = pd.to_datetime(df["exported_at"])
@@ -157,3 +161,65 @@ def test_mixed_legacy_and_current_csvs_both_load(tmp_path, capsys):
     captured = capsys.readouterr()
     assert "legacy.csv" in captured.out
     assert "WARNING" in captured.out
+
+
+# ---------------------------------------------------------------------------
+# Exactly ONE of export_format_version/exported_at present (an inconsistent
+# export shape this project never itself produces - it always writes both
+# columns together starting at version "2") must warn explicitly, rather
+# than silently back-filling version "1" as if this were an ordinary,
+# fully-legacy (both columns absent) export.
+# ---------------------------------------------------------------------------
+
+def test_exported_at_without_version_column_warns_explicitly(tmp_path, capsys):
+    row = dict(CURRENT_ROW)
+    row["exported_at"] = "2026-01-03T00:00:00+00:00"
+    # export_format_version key intentionally omitted entirely (column absent,
+    # not blank) while exported_at IS present.
+    assert "export_format_version" not in row
+    csv_path = _write_csv(tmp_path / "half_metadata.csv", [row])
+
+    data = dashboard.load_data(csv_path)
+    assert len(data) == 1
+    captured = capsys.readouterr()
+    # Must warn specifically about the mismatch, not stay silent.
+    assert "WARNING" in captured.out
+    assert "half_metadata.csv" in captured.out
+    assert "no 'export_format_version' column" in captured.out
+    # Still back-filled with the legacy sentinel for versioning purposes...
+    assert (data["export_format_version"] == dashboard.LEGACY_EXPORT_FORMAT_VERSION).all()
+
+
+def test_version_without_exported_at_column_still_warns(tmp_path, capsys):
+    """The reverse mismatch (export_format_version present, exported_at
+    absent) already had a warning before this fix - kept green here as an
+    explicit regression check alongside the newly-fixed direction above."""
+    row = dict(CURRENT_ROW)
+    row["export_format_version"] = "2"
+    # exported_at key intentionally omitted entirely.
+    assert "exported_at" not in row
+    csv_path = _write_csv(tmp_path / "version_only.csv", [row])
+
+    data = dashboard.load_data(csv_path)
+    assert len(data) == 1
+    captured = capsys.readouterr()
+    assert "WARNING" in captured.out
+    assert "version_only.csv" in captured.out
+    assert "no 'exported_at' column" in captured.out
+    assert (data["export_format_version"] == "2").all()
+
+
+def test_both_metadata_columns_absent_preserves_legacy_no_mismatch_warning(tmp_path, capsys):
+    """Both columns absent is the ORIGINAL, fully-legacy case (preserved
+    behavior): it must keep using the single "no export metadata found"
+    warning, never the "exactly one absent" mismatch wording added above."""
+    csv_path = _write_csv(tmp_path / "fully_legacy.csv", [LEGACY_ROW])
+
+    data = dashboard.load_data(csv_path)
+    assert len(data) == 1
+    captured = capsys.readouterr()
+    assert "WARNING" in captured.out
+    assert "no export metadata found" in captured.out
+    assert "no 'export_format_version' column" not in captured.out
+    assert "no 'exported_at' column" not in captured.out
+    assert (data["export_format_version"] == dashboard.LEGACY_EXPORT_FORMAT_VERSION).all()

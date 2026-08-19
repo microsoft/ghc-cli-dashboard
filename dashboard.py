@@ -43,18 +43,53 @@ REQUIRED_COLUMNS = ["user", "date", "project", "model", "calls", "total_tokens"]
 # rather than raising - build_dashboard() already treats these as optional
 # (task_summary is handled separately via a has_tasks column-presence check,
 # so it's intentionally not defaulted here).
+#
+# `total_nano_aiu` keeps its long-standing `0.0` default when the column is
+# *entirely absent* (a true pre-cost-tracking export) - this is a distinct,
+# deliberately-preserved case from "cost data is missing for some rows",
+# which is instead tracked via `cost_data_calls` (see below): a 0.0 total
+# here with an unknown/zero `cost_data_calls` means "we have no idea what
+# this cost", not "this was confirmed free". `input_tokens`/`output_tokens`/
+# `cache_read_tokens`/`cache_write_tokens`/`reasoning_tokens`/
+# `cost_data_calls` instead default to NaN ("unknown/not reported") rather
+# than 0, so a legacy export that never recorded these categories isn't
+# silently rendered as "confirmed zero" in the Composition/coverage views -
+# see build_dashboard()'s coverage/composition handling and README's
+# "Token and cost definitions" section.
 OPTIONAL_COLUMN_DEFAULTS = {
     "session_id": None,
     "reasoning_effort": "n/a",
     "total_nano_aiu": 0.0,
+    "input_tokens": np.nan,
+    "output_tokens": np.nan,
+    "cache_read_tokens": np.nan,
+    "cache_write_tokens": np.nan,
+    "reasoning_tokens": np.nan,
+    "cost_data_calls": np.nan,
 }
 
 # Numeric columns build_dashboard() reads with int()/float() - validated
 # up front so bad data produces one actionable ERROR instead of a confusing
 # ValueError/AttributeError deep inside HTML generation, or (worse) silently
-# becoming a misleading 0.
+# becoming a misleading 0. These must always be present and finite when the
+# column exists in the file at all - blank/NaN cells here are rejected, not
+# treated as "unknown" (see OPTIONAL_NUMERIC_COLUMNS below for the columns
+# where a per-row blank IS a legitimate "not reported" value).
 NUMERIC_COLUMNS = ["calls", "total_tokens", "total_nano_aiu"]
 INTEGER_NUMERIC_COLUMNS = set(NUMERIC_COLUMNS)
+
+# Numeric columns where a blank/missing per-row value is a legitimate,
+# tolerated "unknown/not reported" state (not an error) - unlike
+# NUMERIC_COLUMNS above. `cost_data_calls` is the cost-coverage counter
+# (see extract_usage.py's "Token/cost definitions" note); the four token
+# sub-categories are additional counters that simply weren't tracked by
+# every historical export. A value that IS present must still be a finite,
+# non-negative whole number - only genuinely blank cells are exempt.
+OPTIONAL_NUMERIC_COLUMNS = [
+    "input_tokens", "output_tokens", "cache_read_tokens",
+    "cache_write_tokens", "reasoning_tokens", "cost_data_calls",
+]
+INTEGER_NUMERIC_COLUMNS |= set(OPTIONAL_NUMERIC_COLUMNS)
 
 DATE_COLUMN = "date"
 
@@ -68,9 +103,13 @@ DATE_COLUMN = "date"
 # no literal "1" ever written; version 1 is recognized purely by the absence
 # of these columns. This is intentionally lenient (old exports keep working)
 # but never silent: see _apply_export_metadata()'s docstring for the exact
-# fallback/warning policy.
+# fallback/warning policy. Version "3" additionally adds `cost_data_calls`
+# (a cost-coverage counter, not a cost figure itself - see
+# extract_usage.py's EXPORT_FORMAT_VERSION comment); its absence is handled
+# the same lenient-but-visible way, via OPTIONAL_COLUMN_DEFAULTS above and
+# the coverage summary computed in build_dashboard().
 LEGACY_EXPORT_FORMAT_VERSION = "1"
-KNOWN_EXPORT_FORMAT_VERSIONS = {"1", "2"}
+KNOWN_EXPORT_FORMAT_VERSIONS = {"1", "2", "3"}
 
 # Columns compared for equality within a duplicate-identity group to decide
 # whether duplicate rows are genuinely identical (safe, silent dedup) or a
@@ -84,7 +123,7 @@ KNOWN_EXPORT_FORMAT_VERSIONS = {"1", "2"}
 VALUE_CONFLICT_COLUMNS = [
     "calls", "input_tokens", "output_tokens", "cache_read_tokens",
     "cache_write_tokens", "reasoning_tokens", "total_tokens", "total_nano_aiu",
-    "project",
+    "cost_data_calls", "project",
 ]
 
 
@@ -118,14 +157,26 @@ def _apply_optional_defaults(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _validate_numeric_column(df: pd.DataFrame, col: str, file_name: str) -> None:
-    """Reject non-numeric, NaN, infinite, negative, or fractional values in `col` -
-    these are all nonsensical for a token/call count or cost total, and
-    coercing them to 0 would silently understate usage."""
+def _validate_numeric_column(df: pd.DataFrame, col: str, file_name: str, allow_missing: bool = False) -> None:
+    """Reject non-numeric, infinite, negative, or fractional values in `col` -
+    these are all nonsensical for a token/call/cost/coverage count, and
+    coercing them to 0 would silently understate usage.
+
+    `allow_missing=True` (used for OPTIONAL_NUMERIC_COLUMNS - the token
+    sub-category counters and `cost_data_calls`) additionally tolerates a
+    genuinely blank/NaN cell as a legitimate "not reported by this export"
+    value, rather than an error - it is kept as NaN rather than coerced to
+    0, so downstream code can tell "confirmed zero" apart from "unknown"
+    (see OPTIONAL_COLUMN_DEFAULTS's docstring). A cell that has some
+    non-blank-but-garbage value (e.g. the text "not-a-number") is still
+    rejected either way - only an originally-empty cell is tolerated."""
     if col not in df.columns:
         return
+    originally_blank = df[col].isna()
     numeric = pd.to_numeric(df[col], errors="coerce")
-    bad_mask = ~np.isfinite(numeric.to_numpy(dtype=float)) | (numeric < 0)
+    check_mask = ~originally_blank if allow_missing else pd.Series(True, index=df.index)
+    numeric_for_check = numeric.where(check_mask, 0.0)
+    bad_mask = check_mask & (~np.isfinite(numeric_for_check.to_numpy(dtype=float)) | (numeric_for_check < 0))
     if bad_mask.any():
         rows = _row_numbers(df, bad_mask)
         sys.exit(
@@ -133,7 +184,7 @@ def _validate_numeric_column(df: pd.DataFrame, col: str, file_name: str) -> None
             f"(non-numeric, NaN, infinite, or negative) at CSV row(s) {_format_rows(rows)}."
         )
     if col in INTEGER_NUMERIC_COLUMNS:
-        fractional_mask = numeric.mod(1).ne(0)
+        fractional_mask = check_mask & numeric_for_check.mod(1).ne(0)
         if fractional_mask.any():
             rows = _row_numbers(df, fractional_mask)
             sys.exit(
@@ -165,6 +216,8 @@ def _validate_file(df: pd.DataFrame, file_name: str) -> pd.DataFrame:
     _validate_required_columns(df, file_name)
     for col in NUMERIC_COLUMNS:
         _validate_numeric_column(df, col, file_name)
+    for col in OPTIONAL_NUMERIC_COLUMNS:
+        _validate_numeric_column(df, col, file_name, allow_missing=True)
     _validate_date_column(df, DATE_COLUMN, file_name)
     return _apply_optional_defaults(df)
 
@@ -192,14 +245,20 @@ def _apply_export_metadata(df: pd.DataFrame, file_name: str) -> pd.DataFrame:
       - Both `export_format_version` and `exported_at` present: the file's
         `exported_at` values are parsed (assumed/forced to UTC) and used
         directly as `_export_ts`.
-      - Either column missing or every `exported_at` value blank/unparseable:
-        this file predates export metadata (or is otherwise incomplete) -
-        printed as a WARNING (not a silent default), and `_export_ts` falls
-        back to the file's OS last-modified time for every row in the file.
-        `export_format_version` itself is back-filled with the legacy
-        sentinel "1" when absent.
+      - Both columns missing entirely: this file predates export metadata -
+        printed as a WARNING (not a silent default), `_export_ts` falls back
+        to the file's OS last-modified time for every row, and
+        `export_format_version` is back-filled with the legacy sentinel "1".
+      - Exactly ONE of the two columns is present (an inconsistent/unexpected
+        export shape - this project always writes both together starting at
+        version "2"): a WARNING is printed explicitly calling out the
+        mismatch, rather than silently back-filling as if this were an
+        ordinary legacy export. `export_format_version` is still back-filled
+        with the legacy sentinel "1" when it's the missing one; `_export_ts`
+        still falls back to OS last-modified time when `exported_at` is the
+        missing one (the file's own `exported_at` values are used otherwise).
       - `export_format_version` present but not one of the versions this
-        tool knows about (currently {"1", "2"}): treated best-effort as
+        tool knows about (currently {"1", "2", "3"}): treated best-effort as
         equivalent to the current version (whatever columns are present are
         used), with a WARNING noting the unrecognized value.
     """
@@ -221,6 +280,13 @@ def _apply_export_metadata(df: pd.DataFrame, file_name: str) -> pd.DataFrame:
         return df
 
     if not has_version_col:
+        print(
+            f"WARNING: {file_name}: has 'exported_at' but no 'export_format_version' column - "
+            f"an inconsistent/unexpected export shape (this project always writes both columns "
+            f"together, starting at version '2'). Treating as a legacy (schema version "
+            f"'{LEGACY_EXPORT_FORMAT_VERSION}') export for versioning purposes, while still using "
+            f"this file's own 'exported_at' values (parsed below) to order it for deduplication."
+        )
         df["export_format_version"] = LEGACY_EXPORT_FORMAT_VERSION
     else:
         df["export_format_version"] = df["export_format_version"].astype("string").fillna(LEGACY_EXPORT_FORMAT_VERSION)
@@ -609,6 +675,25 @@ def _redact_projects(data: pd.DataFrame, exclude_projects: list, exclude_default
     return data, exclude_default_projects
 
 
+def _nullable_int(value):
+    """Convert a possibly-NaN/None numeric value to a plain `int`, or `None`
+    if it's missing/unknown. Used for the token sub-category counters and
+    `cost_data_calls`, where "not reported by this export" is a distinct,
+    meaningful state from `0` ("confirmed to be exactly zero") - see
+    OPTIONAL_COLUMN_DEFAULTS's docstring. Emitting `None` (JSON `null`)
+    rather than `0` lets the dashboard's JS tell the two apart instead of
+    silently treating every legacy row as if it had zero cache/reasoning
+    usage or zero cost-data coverage."""
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except TypeError:
+        pass
+    return int(value)
+
+
 def build_dashboard(data: pd.DataFrame, out_path: str, title: str,
                      exclude_default_projects: list, exclude_default_models: list,
                      storage_key: str, exclude_projects: list = None,
@@ -636,6 +721,19 @@ def build_dashboard(data: pd.DataFrame, out_path: str, title: str,
             "calls": int(r.calls),
             "total_tokens": int(r.total_tokens),
             "total_nano_aiu": float(getattr(r, "total_nano_aiu", 0) or 0),
+            # Coverage counter for the total_nano_aiu figure above - `null`
+            # means "this export predates cost-coverage tracking" (unknown),
+            # NOT "zero calls had cost data" (see extract_usage.py's
+            # "Token/cost definitions" note and OPTIONAL_COLUMN_DEFAULTS).
+            "cost_data_calls": _nullable_int(getattr(r, "cost_data_calls", None)),
+            # Token sub-categories: independent counters, NOT already folded
+            # into total_tokens (= input_tokens + output_tokens only). `null`
+            # means this export never recorded the category, not "zero used".
+            "input_tokens": _nullable_int(getattr(r, "input_tokens", None)),
+            "output_tokens": _nullable_int(getattr(r, "output_tokens", None)),
+            "cache_read_tokens": _nullable_int(getattr(r, "cache_read_tokens", None)),
+            "cache_write_tokens": _nullable_int(getattr(r, "cache_write_tokens", None)),
+            "reasoning_tokens": _nullable_int(getattr(r, "reasoning_tokens", None)),
             "session_id": getattr(r, "session_id", None),
             "reasoning_effort": getattr(r, "reasoning_effort", "n/a") or "n/a" if has_effort else "n/a",
         }
@@ -904,7 +1002,8 @@ def build_dashboard(data: pd.DataFrame, out_path: str, title: str,
 
       <div class="section" id="sec-value">
         <div class="section-head"><span class="num">3</span><h2>Cost &amp; value</h2></div>
-        <p class="section-desc">Which models deliver the most tokens per dollar spent, and how reasoning effort (a setting, not a model choice) drives cost up. Value here means <b>pricing efficiency</b>, not output quality &mdash; see each chart's <span title="hover the ? icons on the charts below for the full caveat">(?)</span> for details.</p>
+        <p class="section-desc">Which models deliver the most tokens per dollar spent, and how reasoning effort (a setting, not a model choice) drives cost up. Value here means <b>pricing efficiency</b>, not output quality &mdash; see each chart's <span title="hover the ? icons on the charts below for the full caveat">(?)</span> for details. Cost figures depend on <code>total_nano_aiu</code> coverage being complete for the selected calls &mdash; see the coverage KPI and any warning banner below before trusting a $0 or "cheapest" result.</p>
+        <div id="insight-coverage" class="insight-bar"></div>
         <div id="insight-value" class="insight-bar"></div>
         <div class="grid">
           <div class="card full">
@@ -937,11 +1036,16 @@ def build_dashboard(data: pd.DataFrame, out_path: str, title: str,
 
       <div class="section" id="sec-composition">
         <div class="section-head"><span class="num">5</span><h2>Composition</h2></div>
-        <p class="section-desc">How your top projects break down by model &mdash; useful for spotting projects that lean heavily on one (possibly expensive) model.</p>
+        <p class="section-desc">How your top projects break down by model, and how tokens break down by category &mdash; useful for spotting projects that lean heavily on one (possibly expensive) model, or heavy cache/reasoning usage that isn't visible in the headline "Total tokens" figure.</p>
         <div class="grid">
           <div class="card full">
             <span class="info-icon" title="The same top-15 projects as 'Top Projects' above, but each bar is split (stacked) by model, with colour = model. Segment height shows how much of that project's usage came from each model, so you can see model mix per project at a glance.">?</span>
             <div id="fig_stack" style="height:440px;"></div>
+          </div>
+          <div class="card full">
+            <span class="info-icon" title="Total input, output, cache-read, cache-write, and reasoning tokens across your currently selected projects/models/dates. These are FIVE INDEPENDENT counters reported by Copilot CLI's usage log, not five parts of one pie: 'Total tokens' (shown elsewhere in this dashboard, and used for the Tokens metric/KPI) is defined as input + output ONLY - cache-read, cache-write, and reasoning tokens are separate, additive categories layered on top, and are not guaranteed to sum to Total tokens or to move in lockstep with estimated cost (which weights each category differently - e.g. cached input is typically billed cheaper per token than fresh input). Always shown as raw token counts, even when the Tokens/Cost toggle above is set to cost, since these categories are not individually costed in this export.">?</span>
+            <div id="fig_token_composition" style="height:380px;"></div>
+            <div id="composition-note" class="hint" style="margin-top:8px;"></div>
           </div>
         </div>
       </div>
@@ -962,7 +1066,35 @@ const RAW = {raw_json};
 // nano_aiu -> USD: verified against GitHub's published per-token Copilot pricing
 // (1 AI credit = $0.01; total_nano_aiu / 1e9 = credits, so /1e11 = USD).
 const NANO_AIU_TO_USD = 1e-11;
-RAW.forEach(r => {{ r.estimated_cost = (r.total_nano_aiu || 0) * NANO_AIU_TO_USD; }});
+// The five independent token sub-category counters that make up a "complete"
+// per-row breakdown - see has_token_categories below and TOKEN_CATEGORIES
+// further down (which drives the Token Composition chart itself).
+const TOKEN_CATEGORY_KEYS = ["input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens"];
+RAW.forEach(r => {{
+  r.estimated_cost = (r.total_nano_aiu || 0) * NANO_AIU_TO_USD;
+  // Cost-coverage classification for this row, from cost_data_calls (a
+  // COVERAGE COUNT, not a cost figure - see extract_usage.py's "Token/cost
+  // definitions" note): "unknown" = this export predates coverage tracking
+  // entirely (cost_data_calls is null); "none"/"partial"/"full" otherwise
+  // compare it against `calls`. A row's estimated_cost can be legitimately
+  // 0 in ANY of these states, so cost coverage must be checked separately -
+  // never infer "confirmed free" just because estimated_cost is 0.
+  r.cost_coverage = r.cost_data_calls === null || r.cost_data_calls === undefined
+    ? "unknown"
+    : r.cost_data_calls <= 0 ? "none"
+    : r.cost_data_calls >= r.calls ? "full"
+    : "partial";
+  // Whether this row has a COMPLETE token-category breakdown (input/output/
+  // cache-read/cache-write/reasoning) - legacy exports never recorded these,
+  // so absence must not be read as "zero cache/reasoning tokens used". A row
+  // is only included in the composition totals when ALL FIVE categories are
+  // present; a row with only some categories present (e.g. a partially
+  // migrated/hand-edited export) is a genuinely incomplete breakdown and
+  // would otherwise silently understate whichever categories are missing -
+  // it is excluded here just like a row with none of them, and counted in
+  // excludedCalls by computeTokenComposition() below.
+  r.has_token_categories = TOKEN_CATEGORY_KEYS.every(k => r[k] !== null && r[k] !== undefined);
+}});
 
 const PROJECT_ORDER = {project_order_json};
 const MODEL_ORDER = {model_order_json};
@@ -1010,6 +1142,53 @@ function groupSum(arr, keyFn, valKey) {{
     m.set(k, (m.get(k) || 0) + (r[valKey] || 0));
   }}
   return m;
+}}
+
+// Cost-data coverage summary for a set of (already filtered) rows. Never
+// divides by zero (guards totalCalls === 0), and treats "unknown" (legacy,
+// pre-coverage-tracking rows) as its own bucket rather than folding it into
+// either "confirmed" or "confirmed missing" - see the "cost_coverage"
+// classification set on each RAW row above for what each state means.
+function computeCostCoverage(rows) {{
+  let totalCalls = 0, confirmedCalls = 0, unknownCalls = 0;
+  for (const r of rows) {{
+    const calls = r.calls || 0;
+    totalCalls += calls;
+    if (r.cost_coverage === "unknown") {{ unknownCalls += calls; continue; }}
+    confirmedCalls += Math.min(r.cost_data_calls || 0, calls);
+  }}
+  const knownCalls = totalCalls - unknownCalls;
+  const missingKnownCalls = Math.max(0, knownCalls - confirmedCalls);
+  const pct = (n) => totalCalls > 0 ? (100 * n / totalCalls) : 0;
+  return {{
+    totalCalls, confirmedCalls, missingKnownCalls, unknownCalls,
+    pctConfirmed: pct(confirmedCalls), pctMissingKnown: pct(missingKnownCalls), pctUnknown: pct(unknownCalls),
+    isComplete: totalCalls > 0 && confirmedCalls === totalCalls,
+  }};
+}}
+
+const TOKEN_CATEGORIES = [
+  {{ key: "input_tokens", label: "Input" }},
+  {{ key: "output_tokens", label: "Output" }},
+  {{ key: "cache_read_tokens", label: "Cache read" }},
+  {{ key: "cache_write_tokens", label: "Cache write" }},
+  {{ key: "reasoning_tokens", label: "Reasoning" }},
+];
+
+// Token-category composition summary for a set of (already filtered) rows.
+// Only rows carrying a breakdown (has_token_categories) contribute to the
+// totals - rows from exports that never recorded these categories are
+// counted separately (excludedCalls) rather than silently treated as zero.
+function computeTokenComposition(rows) {{
+  const totals = {{}};
+  TOKEN_CATEGORIES.forEach(c => {{ totals[c.key] = 0; }});
+  let includedCalls = 0, excludedCalls = 0;
+  for (const r of rows) {{
+    if (!r.has_token_categories) {{ excludedCalls += (r.calls || 0); continue; }}
+    includedCalls += (r.calls || 0);
+    TOKEN_CATEGORIES.forEach(c => {{ totals[c.key] += (r[c.key] || 0); }});
+  }}
+  return {{ totals, includedCalls, excludedCalls }};
 }}
 
 function fmt(n) {{ return Math.round(n).toLocaleString(); }}
@@ -1303,14 +1482,19 @@ function render() {{
   const totalTokens = sum(filtered, "total_tokens");
   const totalCost = sum(filtered, "estimated_cost");
   const totalCalls = sum(filtered, "calls");
+  const coverage = computeCostCoverage(filtered);
+  const coverageLabel = totalCalls > 0 ? Math.round(coverage.pctConfirmed) + "%" : "n/a";
+  const coverageWarn = totalCalls > 0 && !coverage.isComplete;
+  const coverageStyle = coverageWarn ? ' style="color:var(--warn);"' : "";
   const nProjects = new Set(filtered.map(r => r.project)).size;
   const nModels = new Set(filtered.map(r => r.model)).size;
   const nUsers = new Set(filtered.map(r => r.user)).size;
   const dates = filtered.map(r => r.date).filter(Boolean).sort();
   const dateRange = dates.length ? (escapeHtml(dates[0]) + " &rarr; " + escapeHtml(dates[dates.length - 1])) : "n/a";
   document.getElementById("kpi-row").innerHTML = `
-    <div class="kpi" title="Sum of total_tokens (prompt + completion) across every call matching the current project/model/date filters."><div class="kpi-value">${{fmt(totalTokens)}}</div><div class="kpi-label">Total tokens</div></div>
-    <div class="kpi" title="Estimated USD cost using GitHub's published per-token list prices, applied to the same filtered calls. Estimate only - plan allowances, included credits, or discounts are not reflected."><div class="kpi-value">${{fmtCurrency(totalCost)}}</div><div class="kpi-label">Est. cost (list price)</div></div>
+    <div class="kpi" title="Sum of total_tokens across every call matching the current project/model/date filters. total_tokens = input_tokens + output_tokens ONLY - it does NOT include cache-read, cache-write, or reasoning tokens, which are separate additive categories (see the Composition section's token-category chart)."><div class="kpi-value">${{fmt(totalTokens)}}</div><div class="kpi-label">Total tokens (input+output)</div></div>
+    <div class="kpi" title="Estimated USD cost using GitHub's published per-token list prices, computed from total_nano_aiu for the same filtered calls. Estimate only - plan allowances, included credits, or discounts are not reflected. This total is only as complete as the Cost data coverage KPI below; if coverage is under 100%, this figure UNDERSTATES true cost."><div class="kpi-value">${{fmtCurrency(totalCost)}}</div><div class="kpi-label">Est. cost (list price)</div></div>
+    <div class="kpi" title="Share of the current selection's calls with CONFIRMED cost data (cost_data_calls from extract_usage.py, a coverage count - not a cost figure). ${{fmt(coverage.confirmedCalls)}} of ${{fmt(totalCalls)}} calls confirmed here; ${{fmt(coverage.missingKnownCalls)}} confirmed to have NO recorded cost; ${{fmt(coverage.unknownCalls)}} come from an export that predates cost-coverage tracking (export_format_version before 3) and are of UNKNOWN coverage. Below 100% means Est. cost and the Value-for-Money chart may understate true spend - a $0 or 'cheapest' result is not proof of free/cheap usage."><div class="kpi-value"${{coverageStyle}}>${{coverageLabel}}</div><div class="kpi-label">Cost data coverage</div></div>
     <div class="kpi" title="Number of model invocations (API calls) in the current filters."><div class="kpi-value">${{fmt(totalCalls)}}</div><div class="kpi-label">Model calls</div></div>
     <div class="kpi" title="Number of distinct projects/tasks with at least one matching call."><div class="kpi-value">${{nProjects}}</div><div class="kpi-label">Projects/tasks shown</div></div>
     <div class="kpi" title="Number of distinct AI models used among the matching calls."><div class="kpi-value">${{nModels}}</div><div class="kpi-label">Models shown</div></div>
@@ -1411,28 +1595,99 @@ function render() {{
     yaxis: {{ title: {{ text: valAxisTitle }} }}, margin: {{ b: 150 }},
   }}, {{ responsive: true }});
 
+  // Token category composition - ALWAYS raw token counts (not cost), since these five
+  // categories are independent counters that are not individually costed in this export.
+  // See TOKEN_CATEGORIES/computeTokenComposition() and the card's info-icon for the full
+  // "these don't sum to total_tokens or to cost" caveat.
+  const composition = computeTokenComposition(filtered);
+  Plotly.react("fig_token_composition", [{{
+    x: TOKEN_CATEGORIES.map(c => c.label), y: TOKEN_CATEGORIES.map(c => composition.totals[c.key]),
+    type: "bar", marker: {{ color: ["#2f6feb", "#3fb950", "#79c0ff", "#a371f7", "#db6d28"] }},
+    text: TOKEN_CATEGORIES.map(c => fmtCompact(composition.totals[c.key])), textposition: "outside", cliponaxis: false,
+    hovertemplate: "%{{x}}: %{{y:,}} tokens<extra></extra>",
+  }}], {{
+    title: {{ text: "Token Composition by Category (independent counters, not parts of one total)" }},
+    xaxis: {{ title: {{ text: "Token category" }} }},
+    yaxis: {{ title: {{ text: "Tokens (raw count - always shown regardless of the Tokens/Cost toggle)" }} }},
+  }}, {{ responsive: true }});
+  const compositionNote = document.getElementById("composition-note");
+  if (compositionNote) {{
+    compositionNote.innerHTML = composition.excludedCalls > 0
+      ? `${{fmt(composition.includedCalls)}} of ${{fmt(composition.includedCalls + composition.excludedCalls)}} calls in this selection have a token-category breakdown; the remaining ${{fmt(composition.excludedCalls)}} come from an export that never recorded these categories and are excluded from the totals above (not counted as zero).`
+      : `All ${{fmt(composition.includedCalls)}} calls in this selection have a token-category breakdown.`;
+  }}
+
   // Value for money: tokens per dollar by model (aggregate, not per-row average, so heavy
   // users of a model don't get diluted/inflated by one-off outlier rows). This is a pricing
   // ratio, not a quality measure - see the info-icon tooltip on the card for the full caveat.
-  const modelTokens = groupSum(filtered, r => r.model, "total_tokens");
-  const modelCost = groupSum(filtered, r => r.model, "estimated_cost");
-  const modelCalls = groupSum(filtered, r => r.model, "calls");
+  // Numerator/denominator safety: total_tokens and estimated_cost are both aggregated PER
+  // ROW (over that row's `calls`), so a row's cost coverage can only be trusted to cover its
+  // own tokens as a whole - a "partial" row (some but not all of its calls have confirmed
+  // cost) cannot be safely split into a "confirmed" slice of tokens vs cost without assuming
+  // an even distribution across calls that isn't guaranteed. To avoid inflating tok/$ with
+  // tokens whose matching cost isn't actually confirmed, the ratio is built ONLY from rows
+  // with cost_coverage === "full" (every call in that row has confirmed cost) - "none"/
+  // "partial"/"unknown" rows are excluded from both the numerator and the denominator
+  // entirely, never just one side. Models are only ranked here when they have SOME full-
+  // coverage rows with confirmed cost (modelCost > 0), which also rules out a divide-by-zero
+  // in the tpd ratio below. A model can still be ranked while its OVERALL cost coverage
+  // (across every one of its rows, not just the full-coverage ones used in the ratio) is
+  // <100% - in that case the ratio is accurate for the confirmed subset it's computed from,
+  // but is flagged with a coverage note since it may not represent that model's full usage.
+  const modelRows = new Map();
+  for (const r of filtered) {{
+    if (!modelRows.has(r.model)) modelRows.set(r.model, []);
+    modelRows.get(r.model).push(r);
+  }}
+  const fullCoverageRows = filtered.filter(r => r.cost_coverage === "full");
+  const modelTokens = groupSum(fullCoverageRows, r => r.model, "total_tokens");
+  const modelCost = groupSum(fullCoverageRows, r => r.model, "estimated_cost");
+  const modelCalls = groupSum(fullCoverageRows, r => r.model, "calls");
   const valueEntries = Array.from(modelTokens.keys())
     .filter(m => (modelCost.get(m) || 0) > 0)
-    .map(m => ({{ model: m, tpd: modelTokens.get(m) / modelCost.get(m), calls: modelCalls.get(m) || 0 }}))
+    .map(m => {{
+      const modelCoverage = computeCostCoverage(modelRows.get(m) || []);
+      return {{
+        model: m, tpd: modelTokens.get(m) / modelCost.get(m), calls: modelCalls.get(m) || 0,
+        coverageComplete: modelCoverage.isComplete,
+      }};
+    }})
     .sort((a, b) => b.tpd - a.tpd);
+  // Test-only introspection hook (not used by any production UI code): lets
+  // the DOM test harness assert on the computed ranking - e.g. that a model
+  // with zero confirmed cost across every one of its calls is excluded here
+  // entirely (never shown with an infinite/undefined tok/$ ratio) - without
+  // needing to parse rendered chart markup.
+  window.__debugValueEntries = valueEntries;
   Plotly.react("fig_value", [{{
-    x: valueEntries.map(v => v.tpd), y: valueEntries.map(v => v.model),
+    x: valueEntries.map(v => v.tpd), y: valueEntries.map(v => v.model + (v.coverageComplete ? "" : " *")),
     type: "bar", orientation: "h", marker: {{ color: valueEntries.map(v => MODEL_COLORS[v.model] || "#bf8700") }},
-    text: valueEntries.map(v => fmtCompact(v.tpd) + " tok/$ (" + fmt(v.calls) + " calls)"),
+    text: valueEntries.map(v => fmtCompact(v.tpd) + " tok/$ (" + fmt(v.calls) + " calls)" + (v.coverageComplete ? "" : " \u26a0")),
     textposition: "outside", cliponaxis: false,
-    hovertemplate: "%{{y}}: %{{x:,.0f}} tokens per $ spent<extra></extra>",
+    hovertemplate: valueEntries.map(v => (v.model + ": %{{x:,.0f}} tokens per $ spent" +
+      (v.coverageComplete ? "" : " (this model also has some rows with incomplete cost data - ratio above is computed only from this model's rows with fully confirmed cost, and may not reflect its full usage)")) + "<extra></extra>"),
   }}], {{
     title: {{ text: "Value for Money \u2014 Tokens per Dollar by Model" }},
-    xaxis: {{ title: {{ text: "Tokens per USD of estimated cost (higher = cheaper per token)" }} }},
+    xaxis: {{ title: {{ text: "Tokens per USD of estimated cost (higher = cheaper per token), computed only from calls with fully confirmed cost data. * = model also has some rows with incomplete cost-data coverage not reflected in this ratio." }} }},
     yaxis: {{ title: {{ text: "Model (ranked highest value first)" }}, autorange: "reversed" }},
     margin: {{ l: 160, r: 140 }},
   }}, {{ responsive: true }});
+
+  // Coverage insight: a visible warning whenever ANY call in the current selection lacks
+  // confirmed cost data, so a $0/"cheap" cost figure is never mistaken for a confirmed one.
+  const insightCoverage = document.getElementById("insight-coverage");
+  if (insightCoverage) {{
+    if (totalCalls === 0) {{
+      insightCoverage.innerHTML = "";
+    }} else if (coverage.isComplete) {{
+      insightCoverage.innerHTML = `<div class="insight good"><span>&#9989;</span><span>Cost data is confirmed for <b>100%</b> of the ${{fmt(totalCalls)}} calls in the current selection - the Est. cost figures above should be reliable estimates.</span></div>`;
+    }} else {{
+      const parts = [];
+      if (coverage.unknownCalls > 0) parts.push(`${{fmt(coverage.unknownCalls)}} call(s) (${{Math.round(coverage.pctUnknown)}}%) come from an export made before cost-coverage tracking existed (unknown coverage)`);
+      if (coverage.missingKnownCalls > 0) parts.push(`${{fmt(coverage.missingKnownCalls)}} call(s) (${{Math.round(coverage.pctMissingKnown)}}%) are confirmed to have NO recorded cost data`);
+      insightCoverage.innerHTML = `<div class="insight warn"><span>&#9888;&#65039;</span><span><b>Cost data is incomplete</b> for the current selection: ${{parts.join("; ")}}. Est. cost and Value-for-Money figures below likely <b>understate</b> true spend - do not read a low/zero cost as confirmed cheap or free.</span></div>`;
+    }}
+  }}
 
   // Value insight: name the best and worst tok/$ models with enough data to be meaningful (5+ calls)
   const insightValue = document.getElementById("insight-value");
@@ -1441,7 +1696,10 @@ function render() {{
     if (reliableValue.length >= 2) {{
       const best = reliableValue[0], worst = reliableValue[reliableValue.length - 1];
       const multiple = (best.tpd / worst.tpd).toFixed(1);
-      insightValue.innerHTML = `<div class="insight good"><span>&#128181;</span><span><b>${{escapeHtml(best.model)}}</b> gives the most tokens per dollar (${{fmtCompact(best.tpd)}} tok/$), about <b>${{multiple}}&times;</b> more than <b>${{escapeHtml(worst.model)}}</b> (${{fmtCompact(worst.tpd)}} tok/$) among models with 5+ calls.</span></div>`;
+      const caveat = (!best.coverageComplete || !worst.coverageComplete)
+        ? " Note: at least one of these models has incomplete cost-data coverage in this selection, so this comparison may be skewed."
+        : "";
+      insightValue.innerHTML = `<div class="insight good"><span>&#128181;</span><span><b>${{escapeHtml(best.model)}}</b> gives the most tokens per dollar (${{fmtCompact(best.tpd)}} tok/$), about <b>${{multiple}}&times;</b> more than <b>${{escapeHtml(worst.model)}}</b> (${{fmtCompact(worst.tpd)}} tok/$) among models with 5+ calls.${{caveat}}</span></div>`;
     }} else {{
       insightValue.innerHTML = `<div class="insight"><span>&#8505;</span><span>Not enough models with 5+ calls in the current selection for a reliable value comparison.</span></div>`;
     }}
