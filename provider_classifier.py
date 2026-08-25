@@ -11,7 +11,7 @@ metadata. It is a prefix match against GitHub Copilot's own model-naming
 conventions at the time this was written. GitHub/model providers can and do
 add new model families without notice, rename models, or reuse prefixes in
 ways this module doesn't anticipate - any model string that doesn't match a
-known prefix (including genuinely new/renamed models, internal test model
+known prefix (including genuinely new/renamed models or unrecognized test model
 names, or malformed input) safely falls back to OTHER_UNKNOWN_PROVIDER
 rather than guessing, and the raw model string itself is NEVER surfaced as a
 provider label.
