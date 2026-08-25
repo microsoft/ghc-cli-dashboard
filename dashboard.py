@@ -895,6 +895,18 @@ def build_dashboard(data: pd.DataFrame, out_path: str, title: str,
   .proj-name {{ flex: 1; overflow-wrap: anywhere; }}
   .proj-tok {{ color: var(--muted); font-size: 11px; }}
   .hint {{ font-size: 11.5px; color: var(--muted); margin-top: 10px; }}
+  .token-glossary-title {{ margin: 0 0 8px; font-size: 15px; }}
+  .token-glossary-intro {{ margin: 0 0 14px; font-size: 13px; color: var(--text); }}
+  .token-glossary-grid {{
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin: 0 0 14px;
+  }}
+  .token-glossary-item {{
+    background: #f6f8fb; border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px;
+  }}
+  .token-glossary-item.highlight {{ background: #eef3ff; border-color: #c9dcff; }}
+  .token-glossary-item dt {{ font-weight: 700; font-size: 13px; margin-bottom: 4px; }}
+  .token-glossary-item dd {{ margin: 0; font-size: 12.5px; color: var(--muted); line-height: 1.45; }}
+  .token-glossary-note {{ margin: 0; font-size: 11.5px; color: var(--muted); }}
   .toolbar {{
     background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px;
     padding: 14px 18px; margin-bottom: 28px; box-shadow: var(--shadow);
@@ -1083,6 +1095,33 @@ def build_dashboard(data: pd.DataFrame, out_path: str, title: str,
           <div class="card full">
             <span class="info-icon" title="The same top-15 projects as 'Top Projects' above, but each bar is split (stacked) by model, with colour = model. Segment height shows how much of that project's usage came from each model, so you can see model mix per project at a glance.">?</span>
             <div id="fig_stack" style="height:440px;"></div>
+          </div>
+          <div class="card full token-glossary">
+            <h3 class="token-glossary-title">What do these token categories mean?</h3>
+            <p class="token-glossary-intro">Every call to a model is billed in a few different "flavours" of token. The two that trip people up most are <strong>cache read</strong> and <strong>cache write</strong> &mdash; both are about prompt caching, a mechanism models use to avoid re-processing context (like a long system prompt, file contents, or earlier conversation turns) from scratch on every single call.</p>
+            <dl class="token-glossary-grid">
+              <div class="token-glossary-item">
+                <dt>Input</dt>
+                <dd>New content sent to the model this call that it hasn't seen cached &mdash; your prompt, fresh file/tool output, etc. Billed at the standard (highest) input rate.</dd>
+              </div>
+              <div class="token-glossary-item">
+                <dt>Output</dt>
+                <dd>The model's visible reply back to you.</dd>
+              </div>
+              <div class="token-glossary-item highlight">
+                <dt>Cache read</dt>
+                <dd>Context reused from a previous call's cache instead of being reprocessed &mdash; e.g. the same system prompt or earlier turns of a long-running session. <strong>Cheaper than fresh input</strong> (often a fraction of the price), so a high cache-read count is usually a sign of an efficient, well-reused session, not something to worry about.</dd>
+              </div>
+              <div class="token-glossary-item highlight">
+                <dt>Cache write</dt>
+                <dd>Context written into the cache for the <strong>first time</strong> so it's available for cache reads on later calls. Usually carries a small one-time premium over ordinary input tokens &mdash; that upfront cost is repaid if the cached context actually gets reused (as cache reads) later in the session.</dd>
+              </div>
+              <div class="token-glossary-item">
+                <dt>Reasoning</dt>
+                <dd>Tokens the model spends on internal step-by-step reasoning before it writes its visible reply. Not shown in the output text, but still generated and billed.</dd>
+              </div>
+            </dl>
+            <p class="token-glossary-note">These five categories are <strong>independent, additive counters</strong> &mdash; not five slices of one pie. "Total tokens" elsewhere in this dashboard is input + output <em>only</em>; cache-read, cache-write, and reasoning are layered on top and won't necessarily move in lockstep with it or with cost (since each category is billed at a different rate). Cache read/write only appear for models and CLI versions that support prompt caching, so seeing zero for a given model isn't unusual or a data problem.</p>
           </div>
           <div class="card full">
             <span class="info-icon" title="Total input, output, cache-read, cache-write, and reasoning tokens across your currently selected projects/models/dates. These are FIVE INDEPENDENT counters reported by Copilot CLI's usage log, not five parts of one pie: 'Total tokens' (shown elsewhere in this dashboard, and used for the Tokens metric/KPI) is defined as input + output ONLY - cache-read, cache-write, and reasoning tokens are separate, additive categories layered on top, and are not guaranteed to sum to Total tokens or to move in lockstep with estimated cost (which weights each category differently - e.g. cached input is typically billed cheaper per token than fresh input). Always shown as raw token counts, even when the Tokens/Cost toggle above is set to cost, since these categories are not individually costed in this export.">?</span>

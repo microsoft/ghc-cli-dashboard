@@ -258,7 +258,28 @@ complete picture.
 The dashboard's token/cost figures rely on several distinct, non-overlapping
 data points from `assistant_usage_events`. Getting the relationships wrong
 is the single easiest way to misread this data, so they're stated
-explicitly here:
+explicitly here.
+
+**In plain language, what are cache read and cache write tokens?** Both
+relate to *prompt caching* — a mechanism models use to avoid re-processing
+context (a long system prompt, file contents, earlier conversation turns,
+etc.) from scratch on every call:
+
+- **Cache read** = context reused from a previous call's cache instead of
+  being reprocessed. It's typically billed at a steep discount versus
+  fresh input, so a high cache-read count is usually a sign of an
+  efficient, well-reused session — not a cost concern.
+- **Cache write** = context written into the cache for the *first time* so
+  it's available for cache reads on later calls. It usually carries a
+  small one-time premium over ordinary input tokens; that upfront cost is
+  repaid if the cached context is actually reused later in the session.
+- Both only appear for models/CLI versions that support prompt caching —
+  seeing zero for a given model is expected, not a data gap.
+
+The dashboard's Composition section includes an on-page glossary card with
+this same explanation next to the **Token Composition by Category** chart,
+so it's visible without needing this README. The precise, non-overlapping
+field semantics follow below:
 
 - **`total_tokens` = `input_tokens + output_tokens` ONLY.** It does **not**
   include cache-read, cache-write, or reasoning tokens. This is what every
@@ -544,7 +565,6 @@ The Projects, Models, and Providers filter sidebar can be collapsed with
 the browser alongside the other dashboard selections.
 
 ### Task detail table
-
 
 The Task detail section includes a client-side search across project and task
 names, clickable sorting for every column, and a **Copy table** button that
