@@ -93,7 +93,14 @@ const localStorageStub = {
   removeItem(k) { storageMap.delete(k); },
 };
 
-const PlotlyStub = { react() {}, Plots: { resize() {} } };
+// Records the last figure passed to Plotly.react() per div id, so Python
+// tests can assert on trace data and layout (legend visibility, no-data
+// annotations) without a real Plotly renderer.
+const PLOTLY_FIGURES = {};
+const PlotlyStub = {
+  react(id, data, layout) { PLOTLY_FIGURES[id] = { data, layout }; },
+  Plots: { resize() {} },
+};
 
 const sandbox = {
   document: documentStub,
@@ -163,6 +170,8 @@ const out = {
   elements: {}, tsv, probes, coverage, composition,
   valueEntries: sandbox.__debugValueEntries ?? null,
   providerEntries: sandbox.__debugProviderEntries ?? null,
+  providerAllZero: sandbox.__debugProviderAllZero ?? null,
+  figures: PLOTLY_FIGURES,
   filteredCount: sandbox.__debugFilteredCount ?? null,
 };
 for (const [id, el] of Object.entries(ELEMENTS)) {

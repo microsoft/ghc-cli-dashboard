@@ -459,7 +459,11 @@ quick "which vendor am I actually spending on" view without reading
 through a dozen model names. It uses the same project/model/provider/date
 filters as every other chart, a fixed color per provider (see **Provider
 inference** below), and is a visually separate chart/legend from the
-per-model pie so the two never get confused.
+per-model pie so the two never get confused. A provider that aggregates to
+zero (most likely in Estimated cost mode, since older exports carry no cost
+data) draws no pie slice, so the chart keeps its legend to make sure such a
+provider is still listed, and falls back to an explicit "no data" message
+naming the selected providers when every one of them is zero.
 
 ### Provider inference
 

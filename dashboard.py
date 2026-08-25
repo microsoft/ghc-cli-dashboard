@@ -1608,19 +1608,39 @@ function render() {{
   // this chart's legend never overlaps or gets confused with the per-model
   // pie above. "Other / Unknown" is rendered like any other provider - it is
   // only absent from the chart when there are literally zero matching rows.
+  //
+  // A provider whose aggregate is exactly zero draws no pie slice and no
+  // label - most likely in Cost mode, where legacy exports carry no cost
+  // data at all and default to 0. The legend is therefore kept ON for this
+  // chart (unlike the per-model pie above): it is the only remaining place a
+  // zero-valued provider - notably "Other / Unknown" - stays visible. If
+  // EVERY selected provider is zero there is no pie to draw at all, so an
+  // explicit no-data message naming those providers replaces it.
   const byProvider = groupSum(filtered, r => r.provider, valKey);
   const providerEntries = Array.from(byProvider.entries()).sort((a, b) => b[1] - a[1]);
-  Plotly.react("fig_provider", [{{
+  const providerTotal = providerEntries.reduce((acc, p) => acc + p[1], 0);
+  const providerAllZero = providerEntries.length > 0 && providerTotal <= 0;
+  const providerEmptyText = "No " + (metric === "cost" ? "estimated cost" : "token") + " data for the selected providers<br>("
+    + providerEntries.map(p => p[0]).join(", ") + ")"
+    + (metric === "cost" ? "<br>These rows have no recorded cost - switch to Tokens to see them." : "");
+  Plotly.react("fig_provider", providerAllZero ? [] : [{{
     labels: providerEntries.map(p => p[0]), values: providerEntries.map(p => p[1]), type: "pie", hole: 0.4,
     marker: {{ colors: providerEntries.map(p => PROVIDER_COLORS[p[0]] || "#8c959f") }},
     textinfo: "label+percent", texttemplate: "%{{label}}<br>%{{percent}} (%{{customdata}})",
     customdata: providerEntries.map(p => fmtVal(p[1])),
     hovertemplate: "%{{label}}: %{{value:,}} " + unitLabel + " (%{{percent}})<extra></extra>",
-  }}], {{ title: {{ text: (metric === "cost" ? "Cost Share by Provider" : "Token Share by Provider") + " (inferred from model name, selected)" }}, showlegend: false }}, {{ responsive: true }});
+  }}], {{
+    title: {{ text: (metric === "cost" ? "Cost Share by Provider" : "Token Share by Provider") + " (inferred from model name, selected)" }},
+    showlegend: true,
+    annotations: providerAllZero
+      ? [{{ text: providerEmptyText, showarrow: false, x: 0.5, y: 0.5, xref: "paper", yref: "paper", align: "center" }}]
+      : [],
+  }}, {{ responsive: true }});
   // Test-only hooks (mirrors the existing window.__debugValueEntries
   // pattern below) - let the Node DOM harness/pytest assert on the actual
   // filtered/aggregated data without needing a real Plotly renderer.
   window.__debugProviderEntries = providerEntries;
+  window.__debugProviderAllZero = providerAllZero;
   window.__debugFilteredCount = filtered.length;
 
   // Overview insights: call out the top project and top model in plain language

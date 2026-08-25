@@ -316,3 +316,74 @@ def test_provider_derived_correctly_for_current_full_schema_csv(tmp_path):
     records = _extract_json_const(out, "RAW")
     assert records[0]["provider"] == "Anthropic"
     assert records[0]["model"] == "claude-sonnet-5"  # raw model left unchanged
+
+
+# ---------------------------------------------------------------------------
+# Cost-metric zero aggregates: a provider whose value is 0 (e.g. legacy rows
+# with no cost data) draws no pie slice/label, so it must stay visible via
+# the legend, or via an explicit no-data state when everything is zero.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(NODE is None, reason="Node.js not available on PATH")
+def test_provider_pie_keeps_legend_so_zero_valued_providers_stay_visible(tmp_path):
+    """In Cost mode "Other / Unknown" here has zero cost, so Plotly draws no
+    slice for it - the legend is the only place it can still be seen."""
+    rows = [
+        _row(model="gpt-5.4", total_tokens=1000, calls=1, total_nano_aiu=1e10),
+        _row(model="some-brand-new-model", total_tokens=500, calls=1, session_id="s2", total_nano_aiu=0),
+    ]
+    _build(tmp_path, rows, storage_key="dash.html")
+    out_path = tmp_path / "out.html"
+
+    seed = {"copilot_usage_metric::dash.html": "cost"}
+    payload = _run_harness(out_path, seed)
+
+    entries = dict(payload["providerEntries"])
+    assert entries[pc.OTHER_UNKNOWN_PROVIDER] == 0
+    assert payload["providerAllZero"] is False
+    fig = payload["figures"]["fig_provider"]
+    assert fig["layout"]["showlegend"] is True
+    assert pc.OTHER_UNKNOWN_PROVIDER in fig["data"][0]["labels"]
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js not available on PATH")
+def test_provider_pie_shows_explicit_no_cost_data_state_when_every_provider_is_zero(tmp_path):
+    """Legacy exports carry no cost data at all, so in Cost mode every
+    provider aggregates to 0 and there is no pie to draw - an explicit
+    message naming the selected providers replaces it."""
+    rows = [
+        _row(model="gpt-5.4", total_tokens=1000, calls=1, total_nano_aiu=0),
+        _row(model="some-brand-new-model", total_tokens=500, calls=1, session_id="s2", total_nano_aiu=0),
+    ]
+    _build(tmp_path, rows, storage_key="dash.html")
+    out_path = tmp_path / "out.html"
+
+    seed = {"copilot_usage_metric::dash.html": "cost"}
+    payload = _run_harness(out_path, seed)
+
+    assert payload["providerAllZero"] is True
+    fig = payload["figures"]["fig_provider"]
+    assert fig["data"] == []
+    annotation_text = fig["layout"]["annotations"][0]["text"]
+    assert "No estimated cost data" in annotation_text
+    assert "OpenAI" in annotation_text
+    assert pc.OTHER_UNKNOWN_PROVIDER in annotation_text
+    assert "ERROR" not in json.dumps(payload)
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js not available on PATH")
+def test_provider_pie_renders_normally_in_token_mode_for_the_same_rows(tmp_path):
+    """The no-data state is specific to an all-zero aggregate - the same rows
+    in the default Tokens mode still draw a normal pie."""
+    rows = [
+        _row(model="gpt-5.4", total_tokens=1000, calls=1, total_nano_aiu=0),
+        _row(model="some-brand-new-model", total_tokens=500, calls=1, session_id="s2", total_nano_aiu=0),
+    ]
+    _build(tmp_path, rows, storage_key="dash.html")
+    out_path = tmp_path / "out.html"
+    payload = _run_harness(out_path)
+
+    assert payload["providerAllZero"] is False
+    fig = payload["figures"]["fig_provider"]
+    assert fig["data"][0]["values"] == [1000, 500]
+    assert fig["layout"]["annotations"] == []
