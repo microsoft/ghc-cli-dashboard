@@ -798,6 +798,16 @@ def build_dashboard(data: pd.DataFrame, out_path: str, title: str,
 
     plotly_js = get_plotlyjs()
     title_html = _esc(title)
+    overview_secondary_card = (
+        "<div class='card'><span class='info-icon' title=\"Sums the current metric per user account across selected projects/models/dates. Useful when this export covers more than one person.\">?</span><div id='fig_user' style='height:400px;'></div></div>"
+        if n_users > 1
+        else "<div class='card'><span class='info-icon' title=\"Sums the current metric by reasoning-effort level (none/low/medium/high). Higher reasoning effort makes a model think more internally before responding, which increases both token usage and cost.\">?</span><div id='fig_effort' style='height:400px;'></div></div>"
+    )
+    value_effort_card = (
+        "<div class='card full'><span class='info-icon' title=\"Sums the current metric by reasoning-effort level (none/low/medium/high) across selected projects/models/dates. Higher reasoning effort makes a model 'think' more internally before responding, which increases both token usage and cost.\">?</span><div id='fig_effort' style='height:380px;'></div></div>"
+        if n_users > 1
+        else ""
+    )
 
     html = f"""<!DOCTYPE html>
 <html>
@@ -1034,7 +1044,7 @@ def build_dashboard(data: pd.DataFrame, out_path: str, title: str,
             <span class="info-icon" title="Each slice is one AI PROVIDER's share of the current metric (tokens or cost) - Anthropic, OpenAI, Google, xAI, etc. - inferred heuristically from each row's model name at build time (not official billing metadata; see README). Models that don't match a known provider prefix are grouped under 'Other / Unknown', which stays visible whenever any of its rows are selected. Uses the same project/model/provider/date filters as every other chart on this page.">?</span>
             <div id="fig_provider" style="height:400px;"></div>
           </div>
-          {"<div class='card'><span class='info-icon' title=\"Sums the current metric per user account across selected projects/models/dates. Useful when this export covers more than one person.\">?</span><div id='fig_user' style='height:400px;'></div></div>" if n_users > 1 else "<div class='card'><span class='info-icon' title=\"Sums the current metric by reasoning-effort level (none/low/medium/high). Higher reasoning effort makes a model think more internally before responding, which increases both token usage and cost.\">?</span><div id='fig_effort' style='height:400px;'></div></div>"}
+          {overview_secondary_card}
         </div>
       </div>
 
@@ -1066,7 +1076,7 @@ def build_dashboard(data: pd.DataFrame, out_path: str, title: str,
             <span class="info-icon" title="Tokens received per US dollar of estimated list-price cost (total tokens \u00f7 estimated cost), summed across your currently selected projects/models/dates. Higher bars = more tokens for the same spend. This is a raw PRICING-EFFICIENCY ratio only - it does not measure output quality, accuracy, or how many tokens a model actually needs to complete a task well, and models used mostly at high reasoning-effort will look worse here even if their answers are better, since reasoning tokens add cost. Number in parentheses = call count, for a sense of how much data backs each bar.">?</span>
             <div id="fig_value" style="height:420px;"></div>
           </div>
-          {"<div class='card full'><span class='info-icon' title=\"Sums the current metric by reasoning-effort level (none/low/medium/high) across selected projects/models/dates. Higher reasoning effort makes a model 'think' more internally before responding, which increases both token usage and cost.\">?</span><div id='fig_effort' style='height:380px;'></div></div>" if n_users > 1 else ""}
+          {value_effort_card}
         </div>
       </div>
 
