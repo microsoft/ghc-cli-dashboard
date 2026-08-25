@@ -59,8 +59,10 @@ complete picture.
 - **Python 3.9+** and `pip install -r requirements.txt` (pandas, plotly).
 - **Read access to `~/.copilot/session-store.db`** — created automatically
   by Copilot CLI the first time it's used.
-- **Relies on an internal, undocumented local database schema**, not a
-  published/stable public API. It was reverse-engineered from one
+- **Relies on a local database schema that is not a published/stable public
+  API.** GitHub [documents the local session store](https://docs.github.com/en/copilot/concepts/agents/copilot-cli/chronicle),
+  but not the exact usage-event tables and fields this tool reads. The
+  integration was developed against one
   installation (Copilot CLI **v1.0.79**, Windows) and validated against
   ~5,300 usage rows spanning that install's full history — there is
   **no guarantee this schema is stable across CLI versions**, and a future

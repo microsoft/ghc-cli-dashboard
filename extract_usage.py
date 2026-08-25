@@ -78,7 +78,7 @@ EXPORT_FORMAT_VERSION = "3"
 #   elsewhere - it isn't; this export simply passes through whatever the
 #   five raw counters say, side by side.
 # - `total_nano_aiu` is the underlying COST basis for the row (GitHub's
-#   internal billing unit; dashboard.py converts it to an estimated USD
+#   billing unit recorded by Copilot CLI; dashboard.py converts it to an estimated USD
 #   figure). It is priced per-category (e.g. cached input is typically
 #   cheaper per token than fresh input, and reasoning tokens are billed
 #   like output tokens) - it is NOT simply proportional to `total_tokens`,
@@ -240,8 +240,8 @@ def validate_schema(conn: sqlite3.Connection, db_path: str) -> None:
             f"ERROR: {db_path} does not match the Copilot CLI schema this tool expects:\n"
             f"  - {details}\n"
             "This usually means an incompatible/newer (or older) Copilot CLI version "
-            "changed its internal database layout - see README's 'Requirements & "
-            "limitations' section. This tool relies on an internal, undocumented schema."
+            "changed its local database layout - see README's 'Requirements & "
+            "limitations' section. This tool relies on a schema that is not a stable public API."
         )
 
 
