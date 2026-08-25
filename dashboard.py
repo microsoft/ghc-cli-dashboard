@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
 """
 dashboard.py - Combine one or many copilot_usage_*.csv exports (produced by
 extract_usage.py) into a single self-contained HTML dashboard.

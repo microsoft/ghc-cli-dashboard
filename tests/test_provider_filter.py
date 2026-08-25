@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
 """Tests for dashboard.py's Provider filter/visual feature:
 
 - Derived `provider` field embedded in every generated record (from

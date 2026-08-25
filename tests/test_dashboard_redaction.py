@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
 """Tests for dashboard.py's build-time, sharing-safe redaction flags:
 
 - ``--exclude-project`` (repeatable): permanently drops rows for exact

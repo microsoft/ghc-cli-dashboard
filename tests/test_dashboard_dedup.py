@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
 """Tests for dashboard.py's deterministic, exported_at-based deduplication of
 overlapping exports: newest-exported_at-wins ordering (independent of file
 name), deterministic same-timestamp tie-breaking, safe vs. ambiguous legacy

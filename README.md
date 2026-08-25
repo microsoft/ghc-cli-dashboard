@@ -370,7 +370,7 @@ field semantics follow below:
     a couple of personal/confidential projects and any free-text task
     detail:
     ```powershell
-    python dashboard.py --in "copilot_usage_martinchan_*.csv" --out martinchan_shareable.html `
+    python dashboard.py --in "copilot_usage_jsmith_*.csv" --out jsmith_shareable.html `
       --exclude-project "Home Automation" --exclude-project "Job Search 2026" `
       --omit-task-summaries
     ```
@@ -683,6 +683,22 @@ Generated CSV and HTML outputs are excluded by `.gitignore` because they can
 contain personal usage data, project names, and optional task summaries. The
 repository's preview image uses synthetic project names; its displayed
 figures are representative dashboard data.
+
+## Telemetry
+
+This project does not collect, transmit, or enable telemetry. Both scripts
+operate on local files only: `extract_usage.py` reads the local Copilot CLI
+SQLite database and writes a local CSV, while `dashboard.py` reads local CSVs
+and writes a local HTML file. The project makes no network requests.
+
+## Trademarks
+
+This project may contain trademarks or logos for projects, products, or
+services. Authorized use of Microsoft trademarks or logos is subject to and
+must follow [Microsoft's Trademark & Brand Guidelines](https://www.microsoft.com/legal/intellectualproperty/trademarks/usage/general.aspx).
+Use of Microsoft trademarks or logos in modified versions of this project must
+not cause confusion or imply Microsoft sponsorship. Any use of third-party
+trademarks or logos is subject to those third-party's policies.
 
 ## Notes / caveats
 

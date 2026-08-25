@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
 """
 extract_usage.py - Extract GitHub Copilot CLI token-usage data from the local
 session-store.db into a privacy-reduced CSV.

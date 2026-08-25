@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
 """Tests for extract_usage.py's export metadata (`export_format_version`,
 `exported_at`) and dashboard.py's handling of that metadata: parsing/
 timezone-awareness, and the legacy (pre-metadata) compatibility fallback.

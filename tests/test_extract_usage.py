@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
 """Tests for extract_usage.py: temp-snapshot cleanup, schema validation, and
 end-to-end extraction against a synthetic SQLite database.
 

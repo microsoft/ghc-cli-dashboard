@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
 """Security regression tests for dashboard.py's generated HTML/JS output.
 
 These tests prove that data-derived strings (project names, model names,

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
 """provider_classifier.py - Central, Python-only mapping from a raw Copilot
 CLI model identifier (e.g. "gpt-5.4", "claude-opus-5", "gemini-3.5-flash",
 "grok-4.5") to a best-effort AI *provider* label ("OpenAI", "Anthropic",

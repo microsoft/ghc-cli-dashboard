@@ -1,3 +1,6 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+//
 // dom_harness.js - minimal fake-DOM runner used by the security regression
 // tests to execute the inline <script> block from a generated
 // usage_dashboard.html the same way a real browser would (module-load,

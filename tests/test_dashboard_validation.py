@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
 """Tests for dashboard.py's CSV schema/value validation: required vs.
 optional columns, numeric coercion/rejection, and date validation.
 

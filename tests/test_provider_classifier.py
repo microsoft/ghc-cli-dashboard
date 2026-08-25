@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
 """Tests for provider_classifier.py - the central, Python-only mapping from a
 raw Copilot CLI model identifier to a best-effort AI provider label.
 

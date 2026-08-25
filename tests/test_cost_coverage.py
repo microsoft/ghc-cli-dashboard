@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT License.
 """Tests for token/cost accounting clarifications: cost-data coverage
 tracking (full/partial/none/unknown), token-category composition, and
 divide-by-zero robustness in the Value-for-Money chart.
