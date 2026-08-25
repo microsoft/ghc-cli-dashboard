@@ -6,16 +6,22 @@
 // the clipboard-copy TSV text so Python tests can assert hostile payloads
 // never become live markup/formulas.
 //
-// Usage: node dom_harness.js path/to/dashboard.html
+// Usage: node dom_harness.js path/to/dashboard.html ['{"localStorage json key":"value",...}']
+// The optional 3rd argument pre-seeds localStorage BEFORE the inline script
+// runs - e.g. to simulate a returning visitor who already excluded a
+// project/model/provider via a checkbox on a previous visit (see the
+// provider-filter tests, which use this to prove exclusions saved under the
+// STORAGE_KEY_PROJECT/MODEL/PROVIDER keys actually change render() output).
 // Prints one line of JSON: { elements: { id: {innerHTML, textContent} }, tsv }
 "use strict";
 const fs = require("fs");
 
 const htmlPath = process.argv[2];
 if (!htmlPath) {
-  console.error("usage: node dom_harness.js <html-file>");
+  console.error("usage: node dom_harness.js <html-file> [localStorage-seed-json]");
   process.exit(1);
 }
+const localStorageSeedArg = process.argv[3];
 const html = fs.readFileSync(htmlPath, "utf8");
 const scripts = html.match(/<script>[\s\S]*?<\/script>/g) || [];
 if (scripts.length < 2) {
@@ -77,13 +83,24 @@ const documentStub = {
 };
 
 const storageMap = new Map();
+if (localStorageSeedArg) {
+  const seed = JSON.parse(localStorageSeedArg);
+  for (const [k, v] of Object.entries(seed)) storageMap.set(k, String(v));
+}
 const localStorageStub = {
   getItem(k) { return storageMap.has(k) ? storageMap.get(k) : null; },
   setItem(k, v) { storageMap.set(k, String(v)); },
   removeItem(k) { storageMap.delete(k); },
 };
 
-const PlotlyStub = { react() {}, Plots: { resize() {} } };
+// Records the last figure passed to Plotly.react() per div id, so Python
+// tests can assert on trace data and layout (legend visibility, no-data
+// annotations) without a real Plotly renderer.
+const PLOTLY_FIGURES = {};
+const PlotlyStub = {
+  react(id, data, layout) { PLOTLY_FIGURES[id] = { data, layout }; },
+  Plots: { resize() {} },
+};
 
 const sandbox = {
   document: documentStub,
@@ -149,7 +166,14 @@ try {
   coverage = "ERROR:" + e.message;
 }
 
-const out = { elements: {}, tsv, probes, coverage, composition, valueEntries: sandbox.__debugValueEntries ?? null };
+const out = {
+  elements: {}, tsv, probes, coverage, composition,
+  valueEntries: sandbox.__debugValueEntries ?? null,
+  providerEntries: sandbox.__debugProviderEntries ?? null,
+  providerAllZero: sandbox.__debugProviderAllZero ?? null,
+  figures: PLOTLY_FIGURES,
+  filteredCount: sandbox.__debugFilteredCount ?? null,
+};
 for (const [id, el] of Object.entries(ELEMENTS)) {
   out.elements[id] = { innerHTML: el._innerHTML, textContent: el._textContent };
 }
