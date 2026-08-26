@@ -200,11 +200,11 @@ class ReadOnlySnapshot:
         return False  # never suppress exceptions raised inside the `with` block
 
 
-# Tables/columns QUERY below depends on. Copilot CLI's session-store.db
-# schema is internal/undocumented (see README), so a newer or older CLI
-# version could rename or drop any of these - validate_schema() checks all
-# of them upfront and fails with one actionable message instead of letting
-# an arbitrary sqlite3.OperationalError surface from deep inside QUERY.
+# Tables/columns QUERY below depends on. Copilot CLI does not publish this
+# local schema as a stable API, so a newer or older CLI version could rename
+# or drop fields. validate_schema() checks all of them upfront and fails with
+# one actionable message instead of letting sqlite3.OperationalError surface
+# from deep inside QUERY.
 REQUIRED_SCHEMA = {
     "assistant_usage_events": [
         "session_id", "created_at", "model", "reasoning_effort",
