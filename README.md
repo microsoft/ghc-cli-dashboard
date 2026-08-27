@@ -1,5 +1,9 @@
 # Copilot CLI Usage Dashboard
 
+[![Test](https://github.com/microsoft/ghc-cli-dashboard/actions/workflows/test.yml/badge.svg)](https://github.com/microsoft/ghc-cli-dashboard/actions/workflows/test.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.txt)
+[![Python 3.9+](https://img.shields.io/badge/Python-3.9%2B-3776AB?logo=python&logoColor=white)](docs/compatibility.md)
+
 An experimental local dashboard for exploring GitHub Copilot CLI usage. It
 reads the CLI session store, exports aggregate usage data to CSV, and creates
 a self-contained HTML dashboard.
