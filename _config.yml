@@ -21,12 +21,18 @@ defaults:
     values:
       layout: default
 
-# This site is documentation only. It never builds or publishes a dashboard,
-# because generated dashboards embed personal usage data.
+# This site is documentation only. It never publishes a generated dashboard,
+# because those embed personal usage data. The patterns below match the
+# generated filenames from .gitignore. Do not use a bare "*.html" pattern here:
+# Jekyll applies exclude rules when reading theme layouts as well, so "*.html"
+# silently filters out the theme's own _layouts/default.html and every page
+# renders unstyled.
 exclude:
   - "*.py"
   - tests/
   - requirements.txt
   - requirements-dev.txt
   - "*.csv"
-  - "*.html"
+  - usage_dashboard*.html
+  - team_usage_dashboard*.html
+  - out_test.html
