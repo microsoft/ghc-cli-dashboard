@@ -1009,7 +1009,7 @@ def build_dashboard(data: pd.DataFrame, out_path: str, title: str,
 
       <div class="section" id="sec-overview">
         <div class="section-head"><span class="num">1</span><h2>Overview</h2></div>
-        <p class="section-desc">The headline numbers for whatever you've currently selected (projects, models, date range) &mdash; use this as your at-a-glance sanity check before reading the detail charts below.</p>
+        <p class="section-desc">The headline numbers for whatever you've currently selected (projects, models, date range). Use this as your at-a-glance check before reading the detail charts below.</p>
         <div class="kpi-row" id="kpi-row"></div>
         <div id="insight-overview" class="insight-bar"></div>
 
