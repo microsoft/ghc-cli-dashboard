@@ -12,9 +12,9 @@ relative_links:
   enabled: true
   collections: false
 
-# README.md and docs/*.md have no YAML front matter, so Jekyll would render
-# them as bare HTML with no layout. Applying the theme layout by default keeps
-# the files clean in the GitHub file view while still styling the site.
+# Jekyll only applies a layout to files that have YAML front matter, so each
+# published page carries its own front matter. index.md includes README.md so
+# the README itself stays free of front matter in the GitHub file view.
 defaults:
   - scope:
       path: ""

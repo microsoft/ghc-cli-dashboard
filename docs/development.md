@@ -1,3 +1,8 @@
+---
+layout: default
+title: Development
+---
+
 # Development
 
 Install dependencies and run the test suite:

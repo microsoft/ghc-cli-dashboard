@@ -1,3 +1,8 @@
+---
+layout: default
+title: Token and cost data
+---
+
 # Token and cost data
 
 ## Token fields

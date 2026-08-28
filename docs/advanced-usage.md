@@ -1,3 +1,8 @@
+---
+layout: default
+title: Advanced usage
+---
+
 # Advanced usage
 
 ## Privacy and sharing
