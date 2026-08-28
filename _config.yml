@@ -12,6 +12,15 @@ relative_links:
   enabled: true
   collections: false
 
+# README.md and docs/*.md have no YAML front matter, so Jekyll would render
+# them as bare HTML with no layout. Applying the theme layout by default keeps
+# the files clean in the GitHub file view while still styling the site.
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: default
+
 # This site is documentation only. It never builds or publishes a dashboard,
 # because generated dashboards embed personal usage data.
 exclude:
