@@ -1,3 +1,8 @@
+---
+layout: default
+title: Compatibility and data format
+---
+
 # Compatibility and data format
 
 ## Environment
