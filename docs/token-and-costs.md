@@ -1,6 +1,7 @@
 ---
 layout: default
 title: Token and cost data
+nav_order: 3
 ---
 
 # Token and cost data
