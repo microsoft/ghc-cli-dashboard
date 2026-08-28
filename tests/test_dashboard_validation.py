@@ -5,7 +5,6 @@ optional columns, numeric coercion/rejection, and date validation.
 
 Run with: python -m pytest tests/ -v
 """
-import math
 import sys
 from pathlib import Path
 
@@ -63,8 +62,8 @@ def test_loads_valid_legacy_csv_with_documented_defaults(tmp_path):
 
 
 def test_loads_mixed_current_and_legacy_csvs_together(tmp_path):
-    current_path = _write_csv(tmp_path / "current.csv", [CURRENT_ROW])
-    legacy_path = _write_csv(tmp_path / "legacy.csv", [LEGACY_ROW])
+    _write_csv(tmp_path / "current.csv", [CURRENT_ROW])
+    _write_csv(tmp_path / "legacy.csv", [LEGACY_ROW])
     data = dashboard.load_data(str(tmp_path / "*.csv"))
     assert len(data) == 2
     assert set(data["project"]) == {"org/repo", "org/repo2"}

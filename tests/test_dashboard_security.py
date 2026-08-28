@@ -209,7 +209,7 @@ def test_insights_and_table_escape_hostile_project_and_model_names(tmp_path):
             "session_id": "s2", "reasoning_effort": "low", "task_summary": FORMULA_TASK,
         },
     ]
-    out = _build(tmp_path, rows)
+    _build(tmp_path, rows)
     out_path = tmp_path / "out.html"
 
     result = subprocess.run(
@@ -249,7 +249,7 @@ def test_insights_and_table_escape_hostile_project_and_model_names(tmp_path):
 
 @pytest.mark.skipif(NODE is None, reason="Node.js not available on PATH")
 def test_sanitize_and_escape_helper_probes(tmp_path):
-    out = _build(tmp_path, _base_rows())
+    _build(tmp_path, _base_rows())
     out_path = tmp_path / "out.html"
     result = subprocess.run(
         [NODE, str(REPO_ROOT / "tests" / "dom_harness.js"), str(out_path)],

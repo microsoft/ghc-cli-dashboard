@@ -17,7 +17,6 @@ Run with: python -m pytest tests/ -v
 if `node` isn't available - see test_dashboard_security.py's docstring.)
 """
 import json
-import re
 import shutil
 import subprocess
 import sys
@@ -166,7 +165,7 @@ def test_default_load_includes_every_provider(tmp_path):
         _row(model="gpt-5.4", total_tokens=2000, calls=1, session_id="s2"),
         _row(model="gemini-3.5-flash", total_tokens=3000, calls=1, session_id="s3"),
     ]
-    out = _build(tmp_path, rows)
+    _build(tmp_path, rows)
     out_path = tmp_path / "out.html"
     payload = _run_harness(out_path)
     providers = {p for p, _ in payload["providerEntries"]}
@@ -180,7 +179,7 @@ def test_excluding_a_provider_removes_its_rows_from_every_downstream_output(tmp_
         _row(model="claude-opus-5", total_tokens=1000, calls=1),
         _row(model="gpt-5.4", total_tokens=2000, calls=1, session_id="s2"),
     ]
-    out = _build(tmp_path, rows, storage_key="dash.html")
+    _build(tmp_path, rows, storage_key="dash.html")
     out_path = tmp_path / "out.html"
 
     seed = {"copilot_usage_excluded_providers::dash.html": json.dumps(["Anthropic"])}
@@ -205,7 +204,7 @@ def test_provider_exclusion_applies_even_if_its_models_checkbox_stays_selected(t
         _row(model="claude-opus-5", total_tokens=1000, calls=1),
         _row(model="gpt-5.4", total_tokens=2000, calls=1, session_id="s2"),
     ]
-    out = _build(tmp_path, rows, storage_key="dash.html")
+    _build(tmp_path, rows, storage_key="dash.html")
     out_path = tmp_path / "out.html"
 
     seed = {
@@ -222,7 +221,7 @@ def test_provider_exclusion_applies_even_if_its_models_checkbox_stays_selected(t
 @pytest.mark.skipif(NODE is None, reason="Node.js not available on PATH")
 def test_all_providers_excluded_yields_zero_state_without_error(tmp_path):
     rows = [_row(model="claude-opus-5"), _row(model="gpt-5.4", session_id="s2")]
-    out = _build(tmp_path, rows, storage_key="dash.html")
+    _build(tmp_path, rows, storage_key="dash.html")
     out_path = tmp_path / "out.html"
 
     seed = {"copilot_usage_excluded_providers::dash.html": json.dumps(["Anthropic", "OpenAI"])}

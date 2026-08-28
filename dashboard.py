@@ -694,6 +694,8 @@ def _nullable_int(value):
         if pd.isna(value):
             return None
     except TypeError:
+        # pd.isna raises TypeError for types it cannot evaluate (for example a
+        # list). Those are never missing values, so fall through to int().
         pass
     return int(value)
 

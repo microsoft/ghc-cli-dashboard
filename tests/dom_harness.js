@@ -26,6 +26,12 @@ if (!htmlPath) {
 }
 const localStorageSeedArg = process.argv[3];
 const html = fs.readFileSync(htmlPath, "utf8");
+// lgtm[js/bad-tag-filter]
+// codeql[js/bad-tag-filter] - This reads a file this project just generated,
+// not untrusted input, and is not a security sanitizer. The dashboard writes
+// plain <script> blocks with no attributes or nested comments, so a simple
+// non-greedy match is sufficient to split the Plotly bundle from the inline
+// dashboard script.
 const scripts = html.match(/<script>[\s\S]*?<\/script>/g) || [];
 if (scripts.length < 2) {
   console.error("expected at least 2 <script> blocks (plotly.js + dashboard), found " + scripts.length);

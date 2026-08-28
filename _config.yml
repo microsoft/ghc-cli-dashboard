@@ -30,6 +30,7 @@ defaults:
 exclude:
   - "*.py"
   - tests/
+  - tools/
   - requirements.txt
   - requirements-dev.txt
   - "*.csv"
