@@ -1,6 +1,7 @@
 ---
 layout: default
 title: Advanced usage
+nav_order: 4
 ---
 
 # Advanced usage

@@ -8,6 +8,17 @@ team_usage_dashboard*.html
 sample_usage*.csv
 sample_dashboard*.html
 
+# Site templates are HTML but are source, not generated usage data.
+!_includes/**/*.html
+!_layouts/**/*.html
+
+# Local Jekyll build output
+_site/
+.sass-cache/
+.jekyll-cache/
+.jekyll-metadata
+Gemfile.lock
+
 # Python
 __pycache__/
 *.pyc

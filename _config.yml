@@ -1,12 +1,20 @@
 title: Copilot CLI Usage Dashboard
 description: >-
   An experimental local dashboard for exploring GitHub Copilot CLI usage.
-theme: jekyll-theme-cayman
 
-# GitHub Pages serves README.md as the landing page and rewrites relative
-# links between Markdown files via the jekyll-relative-links plugin.
+# GitHub Pages runs the legacy Jekyll builder for this repository, which only
+# ships a fixed set of built-in themes. remote_theme is the supported way to
+# use any other theme there, and is the installation method just-the-docs
+# documents for GitHub Pages.
+remote_theme: just-the-docs/just-the-docs@v0.12.0
+
+# Rewrites relative links between Markdown files so the same links work both
+# in the GitHub file view and on the published site.
 plugins:
   - jekyll-relative-links
+  - jekyll-remote-theme
+  - jekyll-seo-tag
+  - jekyll-include-cache
 
 relative_links:
   enabled: true
@@ -20,6 +28,34 @@ defaults:
       path: ""
     values:
       layout: default
+
+url: https://microsoft.github.io
+baseurl: /ghc-cli-dashboard
+
+search_enabled: true
+search:
+  heading_level: 3
+  previews: 2
+
+# Turns each heading into a link target, which is what the in-page table of
+# contents on the longer guides relies on.
+heading_anchors: true
+
+color_scheme: light
+enable_copy_code_button: true
+
+# Restrict the in-page table of contents to section headings, so it does not
+# repeat the page title.
+kramdown:
+  toc_levels: 2..3
+
+aux_links:
+  View on GitHub:
+    - https://github.com/microsoft/ghc-cli-dashboard
+aux_links_new_tab: true
+
+back_to_top: true
+back_to_top_text: Back to top
 
 # This site is documentation only. It never publishes a generated dashboard,
 # because those embed personal usage data. The patterns below match the
