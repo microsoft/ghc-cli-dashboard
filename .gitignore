@@ -4,6 +4,10 @@ usage_dashboard*.html
 team_usage_dashboard*.html
 *.html
 
+# Sample/screenshot scratch output from tools/
+sample_usage*.csv
+sample_dashboard*.html
+
 # Python
 __pycache__/
 *.pyc
