@@ -1,0 +1,23 @@
+title: Copilot CLI Usage Dashboard
+description: >-
+  An experimental local dashboard for exploring GitHub Copilot CLI usage.
+theme: jekyll-theme-cayman
+
+# GitHub Pages serves README.md as the landing page and rewrites relative
+# links between Markdown files via the jekyll-relative-links plugin.
+plugins:
+  - jekyll-relative-links
+
+relative_links:
+  enabled: true
+  collections: false
+
+# This site is documentation only. It never builds or publishes a dashboard,
+# because generated dashboards embed personal usage data.
+exclude:
+  - "*.py"
+  - tests/
+  - requirements.txt
+  - requirements-dev.txt
+  - "*.csv"
+  - "*.html"
