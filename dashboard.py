@@ -6,7 +6,7 @@ dashboard.py - Combine one or many copilot_usage_*.csv exports (produced by
 extract_usage.py) into a single self-contained HTML dashboard.
 
 This is intentionally a static-HTML output (Plotly, embedded JS) so it can be
-emailed, posted to Teams/SharePoint, or opened by anyone with zero installs -
+shared as a file or opened by anyone with zero installs -
 no server, no Streamlit, no Python needed to VIEW it (only to generate it).
 Project AND model checkboxes let you exclude either from every chart; your
 choices are remembered per-browser via localStorage. Note: unchecking a

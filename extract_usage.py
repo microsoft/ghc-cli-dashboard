@@ -23,8 +23,8 @@ Usage:
     python extract_usage.py --out "C:\\shared\\team-usage\\jsmith_2026-08-11.csv"
 
 Output: a CSV with one row per (session, model, day) with token/cost totals.
-Drop the resulting CSV into a shared team folder (SharePoint/Teams/OneDrive)
-so dashboard.py can combine multiple people's exports into one view.
+Drop the resulting CSV into a shared folder so dashboard.py can combine
+multiple exports into one view.
 """
 import argparse
 import getpass
