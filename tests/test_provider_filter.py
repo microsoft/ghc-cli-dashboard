@@ -130,6 +130,57 @@ def test_provider_colors_embedded_and_fixed_per_name(tmp_path):
     assert provider_colors[pc.OTHER_UNKNOWN_PROVIDER] == "#8c959f"
 
 
+@pytest.mark.skipif(NODE is None, reason="Node.js not available on PATH")
+def test_models_inherit_provider_colours_across_charts_and_filters(tmp_path):
+    models = ["claude-opus-5", "claude-sonnet-5", "gpt-5.4", "gemini-3.5-flash", "grok-4.5", "unmapped-model"]
+    rows = [_row(model=model, session_id=str(i), cost_data_calls=5) for i, model in enumerate(models)]
+    _build(tmp_path, rows)
+    path = tmp_path / "out.html"
+    for seed in [None, {"copilot_usage_excluded_providers::test": json.dumps(["Anthropic"])}]:
+        result = _run_harness(path, seed)
+        expected_models = models if seed is None else models[2:]
+        for chart in ["fig_model", "fig_value"]:
+            trace = result["figures"][chart]["data"][0]
+            assert set(trace["y"]) == set(expected_models)
+            for model, colour in zip(trace["y"], trace["marker"]["color"]):
+                assert colour == pc.PROVIDER_COLORS[pc.classify_provider(model)]
+        for element in ["model-provider-legend", "value-provider-legend"]:
+            legend = result["elements"][element]["innerHTML"]
+            assert ("Anthropic" in legend) == (seed is None)
+            assert "Other / Unknown" in legend
+            assert pc.PROVIDER_COLORS["OpenAI"] in legend
+
+
+@pytest.mark.skipif(NODE is None, reason="Node.js not available on PATH")
+def test_model_mix_uses_unique_stable_model_colours(tmp_path):
+    models = ["claude-opus-5", "claude-sonnet-5", "gpt-5.4", "gemini-3.5-flash"]
+    rows = [_row(model=model, session_id=str(i), cost_data_calls=5) for i, model in enumerate(models)]
+    html = _build(tmp_path, rows)
+    mapping = _extract_json_const(html, "MODEL_MIX_COLORS")
+    assert len(set(mapping.values())) == len(models)
+    assert "stack-provider-legend" not in html
+    for seed in [
+        None,
+        {"copilot_usage_metric::test": "cost"},
+        {"copilot_usage_excluded_models::test": json.dumps(["claude-opus-5"])},
+    ]:
+        result = _run_harness(tmp_path / "out.html", seed)
+        traces = result["figures"]["fig_stack"]["data"]
+        assert [trace["name"] for trace in traces] == sorted(trace["name"] for trace in traces)
+        for trace in traces:
+            assert trace["marker"]["color"] == mapping[trace["name"]]
+        legend = result["figures"]["fig_stack"]["layout"]["legend"]
+        assert legend["yref"] == "container"
+        assert legend["traceorder"] == "normal"
+
+
+def test_model_mix_palette_does_not_repeat_or_depend_on_input_order():
+    models = ["model-%03d" % i for i in range(100)]
+    mapping = dashboard._model_mix_colors(models)
+    assert len(mapping) == len(set(mapping.values())) == 100
+    assert mapping == dashboard._model_mix_colors(list(reversed(models)))
+
+
 # ---------------------------------------------------------------------------
 # Storage key: separate from project/model, default all-selected
 # ---------------------------------------------------------------------------

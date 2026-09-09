@@ -15,6 +15,14 @@ python -m pytest tests/ -v
 
 The GitHub Actions workflow runs the test suite on Python 3.9 with Node.js.
 Node executes the lightweight DOM harness used for generated-dashboard tests.
+The harness also accepts a fourth argument containing a JSON array of named
+UI actions (for example, `resetFilters` or `searchFilters`) for interaction
+regressions.
+
+`tests/test_dashboard_ux.py` includes browser layout and interaction checks at
+390px, 768px and 1440px widths. These use the same optional Playwright/Chromium
+installation as the screenshot tool below, and skip when it is unavailable.
+Run them with `python -m pytest tests/test_dashboard_ux.py -q`.
 
 Keep generated CSV and HTML files out of commits. They may contain personal
 usage data, project names, and task summaries.

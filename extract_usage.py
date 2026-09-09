@@ -7,9 +7,13 @@ session-store.db into a privacy-reduced CSV.
 
 Note: this reduces exposure (folder paths are minimized to a repo/folder
 name) but does not anonymize the data - it still contains your OS username
-(or --user-label), project/repo names, model names, and, with
---include-task-summary, free-text task summaries. Review a CSV's contents
-before sharing it outside your machine.
+(or --user-label), project/repo names, model names, and, unless
+--exclude-task-summary is passed, free-text task summaries. Task summaries
+are included by default (this tool is meant for personal viewing, and the
+summaries are what make the Work patterns view useful). Review a CSV's
+contents before sharing it outside your machine, and pass
+--exclude-task-summary (or dashboard.py's --omit-task-summaries at build
+time) if you plan to share it.
 
 Data source: ~/.copilot/session-store.db (SQLite). This file exists with the
 same schema on every machine that runs Copilot CLI (Windows/Mac/Linux), so
@@ -19,7 +23,7 @@ each person runs it against their own machine.
 Usage:
     python extract_usage.py
     python extract_usage.py --db "D:\\custom\\path\\session-store.db"
-    python extract_usage.py --user-label "team-alpha-jsmith" --include-task-summary
+    python extract_usage.py --user-label "team-alpha-jsmith" --exclude-task-summary
     python extract_usage.py --out "C:\\shared\\team-usage\\jsmith_2026-08-11.csv"
 
 Output: a CSV with one row per (session, model, day) with token/cost totals.
@@ -279,7 +283,9 @@ def main():
     ap.add_argument("--db", default=default_db_path(), help="Path to session-store.db (default: ~/.copilot/session-store.db)")
     ap.add_argument("--out", default=None, help="Output CSV path (default: ./copilot_usage_<user>_<date>.csv)")
     ap.add_argument("--user-label", default=None, help="Label to identify you in a shared/team rollup (default: OS username)")
-    ap.add_argument("--include-task-summary", action="store_true", help="Include the free-text session/task summary (off by default - may contain sensitive detail)")
+    summary_options = ap.add_mutually_exclusive_group()
+    summary_options.add_argument("--exclude-task-summary", action="store_true", help="Exclude the free-text session/task summary (included by default - may contain sensitive detail; pass this before sharing the CSV)")
+    summary_options.add_argument("--include-task-summary", action="store_true", help="Include free-text task summaries (the default; retained for existing commands)")
     args = ap.parse_args()
 
     user_label = args.user_label or getpass.getuser()
@@ -307,7 +313,7 @@ def main():
         "total_tokens", "total_nano_aiu", "cost_data_calls", "session_id",
         "export_format_version", "exported_at",
     ]
-    if args.include_task_summary:
+    if not args.exclude_task_summary:
         out_cols.insert(5, "task_summary")
 
     idx = {c: i for i, c in enumerate(cols)}
@@ -340,7 +346,7 @@ def main():
                 "export_format_version": EXPORT_FORMAT_VERSION,
                 "exported_at": exported_at,
             }
-            if args.include_task_summary:
+            if not args.exclude_task_summary:
                 rec["task_summary"] = r[idx["task_summary"]] or ""
             w.writerow(rec)
 

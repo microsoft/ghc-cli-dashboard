@@ -290,6 +290,6 @@ def test_dashboard_smoke_generation(tmp_path):
         },
     ]
     out = _build(tmp_path, rows)
-    assert "<html>" in out
+    assert '<html lang="en">' in out
     assert "Copilot CLI Token Usage Dashboard" in out
     assert "demo-project" in out

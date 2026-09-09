@@ -169,6 +169,41 @@ def test_validate_schema_reports_both_tables_missing_columns(tmp_path):
 # End-to-end extraction smoke test against a synthetic DB
 # ---------------------------------------------------------------------------
 
+@pytest.mark.parametrize("flags, includes_summary", [
+    ([], True),
+    (["--include-task-summary"], True),
+    (["--exclude-task-summary"], False),
+])
+def test_task_summary_cli_options(tmp_path, monkeypatch, flags, includes_summary):
+    import csv
+
+    db_path = tmp_path / "session-store.db"
+    _make_valid_db(str(db_path))
+    out_path = tmp_path / "out.csv"
+    monkeypatch.setattr(sys, "argv", [
+        "extract_usage.py", "--db", str(db_path), "--out", str(out_path),
+        "--user-label", "sample-user",
+    ] + flags)
+    extract_usage.main()
+    with out_path.open(encoding="utf-8", newline="") as stream:
+        rows = list(csv.DictReader(stream))
+    assert ("task_summary" in rows[0]) == includes_summary
+    if includes_summary:
+        assert rows[0]["task_summary"] == "Fix bug"
+
+
+@pytest.mark.parametrize("flags", [
+    ["--include-task-summary", "--exclude-task-summary"],
+    ["--exclude-task-summary", "--include-task-summary"],
+])
+def test_conflicting_task_summary_flags_are_rejected(monkeypatch, capsys, flags):
+    monkeypatch.setattr(sys, "argv", ["extract_usage.py"] + flags)
+    with pytest.raises(SystemExit) as exc:
+        extract_usage.main()
+    assert exc.value.code == 2
+    assert "not allowed with argument" in capsys.readouterr().err
+
+
 def test_extraction_end_to_end_against_synthetic_db(tmp_path, monkeypatch, capsys):
     import glob
     import tempfile

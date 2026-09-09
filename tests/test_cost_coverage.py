@@ -466,7 +466,7 @@ def test_smoke_generation_runs_clean_for_mixed_coverage_dataset(tmp_path):
         _row(project="Gamma", model="gpt-4o", calls=2, total_tokens=40, total_nano_aiu=0.0),
     ]
     html_text, out_path = _build(tmp_path, rows)
-    assert "Token Composition by Category" in html_text
+    assert "Token categories (independent counters)" in html_text
     assert "Cost data coverage" in html_text
 
     payload = _run_harness(out_path)

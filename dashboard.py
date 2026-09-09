@@ -24,6 +24,7 @@ Usage:
     python dashboard.py --in "copilot_usage_*.csv" --exclude-project "Personal Project" --omit-task-summaries
 """
 import argparse
+import colorsys
 import glob
 import json
 import os
@@ -34,6 +35,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from plotly.colors import qualitative
 from plotly.offline import get_plotlyjs
 
 from provider_classifier import PROVIDER_COLORS, classify_provider
@@ -619,11 +621,40 @@ def _json_for_script(obj) -> str:
     )
 
 
+def _model_mix_colors(models):
+    """Assign distinct categorical swatches, independent of usage ranking."""
+    palette = [colour.lower() for colour in qualitative.Alphabet]
+    colours = {}
+    used = set()
+    extra_index = 0
+    for index, model in enumerate(sorted(set(models))):
+        if index < len(palette):
+            colour = palette[index]
+        else:
+            # Extend instead of cycling the palette when exports contain >26 models.
+            while True:
+                hue = (extra_index * 0.61803398875) % 1
+                saturation = 0.6 + 0.15 * (extra_index % 2)
+                value = 0.65 + 0.2 * ((extra_index // 2) % 2)
+                rgb = colorsys.hsv_to_rgb(hue, saturation, value)
+                colour = "#" + "".join(f"{round(channel * 255):02x}" for channel in rgb)
+                extra_index += 1
+                if colour not in used:
+                    break
+        used.add(colour)
+        colours[model] = colour
+    return colours
+
+
 def _checkbox_items(order, totals, css_class):
+    kind = {"proj-check": "project", "model-check": "model", "provider-check": "provider"}[css_class]
     return "".join(
-        f'<label class="proj-item"><input type="checkbox" class="{css_class}" value="{_esc(p, quote=True)}" checked> '
-        f'<span class="proj-name">{_esc(p)}</span> <span class="proj-tok">{int(totals[p]):,}</span></label>'
-        for p in order
+        f'<div class="filter-item"><label class="proj-item"><input type="checkbox" class="{css_class}" value="{_esc(p, quote=True)}" checked> '
+        f'<span class="proj-name">{_esc(p)}</span></label>'
+        f'<button class="filter-only" onclick="selectOnly(\'{kind}\', {index})" '
+        f'aria-label="Show only {_esc(p, quote=True)}">Only</button>'
+        f'<span class="filter-blocked" hidden>Excluded by provider</span></div>'
+        for index, p in enumerate(order)
     )
 
 
@@ -776,6 +807,7 @@ def build_dashboard(data: pd.DataFrame, out_path: str, title: str,
     raw_json = _json_for_script(records)
     project_order_json = _json_for_script(project_order)
     model_order_json = _json_for_script(model_order)
+    model_mix_colors_json = _json_for_script(_model_mix_colors(model_order))
     provider_order_json = _json_for_script(provider_order)
     provider_colors_json = _json_for_script(PROVIDER_COLORS)
     exclude_default_projects_json = _json_for_script(exclude_default_projects)
@@ -800,92 +832,109 @@ def build_dashboard(data: pd.DataFrame, out_path: str, title: str,
 
     plotly_js = get_plotlyjs()
     title_html = _esc(title)
+    effort_palette_note = (
+        "<p class='hint'>Viridis follows configured effort from none (purple) to high (yellow). "
+        "Grey marks unrecorded or unrecognised effort.</p>"
+    )
     overview_secondary_card = (
         "<div class='card'><span class='info-icon' title=\"Sums the current metric per user account across selected projects/models/dates. Useful when this export covers more than one person.\">?</span><div id='fig_user' style='height:400px;'></div></div>"
         if n_users > 1
-        else "<div class='card'><span class='info-icon' title=\"Sums the current metric by reasoning-effort level (none/low/medium/high). Higher reasoning effort makes a model think more internally before responding, which increases both token usage and cost.\">?</span><div id='fig_effort' style='height:400px;'></div></div>"
+        else "<div class='card'><span class='info-icon' title=\"Sums the current metric by reasoning-effort level (none/low/medium/high). Higher reasoning effort makes a model think more internally before responding, which increases both token usage and cost.\">?</span><div id='fig_effort' style='height:400px;'></div>" + effort_palette_note + "</div>"
     )
     value_effort_card = (
-        "<div class='card full'><span class='info-icon' title=\"Sums the current metric by reasoning-effort level (none/low/medium/high) across selected projects/models/dates. Higher reasoning effort makes a model 'think' more internally before responding, which increases both token usage and cost.\">?</span><div id='fig_effort' style='height:380px;'></div></div>"
+        "<div class='card full'><span class='info-icon' title=\"Sums the current metric by reasoning-effort level (none/low/medium/high) across selected projects/models/dates. Higher reasoning effort makes a model 'think' more internally before responding, which increases both token usage and cost.\">?</span><div id='fig_effort' style='height:380px;'></div>" + effort_palette_note + "</div>"
         if n_users > 1
         else ""
     )
 
     html = f"""<!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title_html}</title>
 <script>{plotly_js}</script>
 <style>
   :root {{
     --accent: #2f6feb; --accent-dark: #1a4fc4; --good: #1a7f37; --warn: #9a6700;
-    --bg: #f0f3f8; --card-bg: #ffffff; --border: #d8dee7; --text: #1b1f24; --muted: #59636e;
-    --shadow: 0 1px 2px rgba(20,30,50,0.04), 0 4px 12px rgba(20,30,50,0.05);
-    --shadow-hover: 0 2px 4px rgba(20,30,50,0.06), 0 8px 24px rgba(20,30,50,0.09);
+    --bg: #f4f4f4; --card-bg: #ffffff; --border: #e5e7eb; --text: #111827; --muted: #59636e;
+    --shadow: none;
+    --shadow-hover: 0 1px 2px rgba(20,30,50,0.05);
   }}
   * {{ box-sizing: border-box; }}
   body {{
     font-family: "Segoe UI Variable", "Segoe UI", -apple-system, Roboto, sans-serif;
     margin: 0; padding: 0; background: var(--bg); color: var(--text); line-height: 1.4;
+    font-variant-numeric: tabular-nums;
   }}
   .hero {{
-    background: linear-gradient(135deg, #14294f 0%, #1f3d78 55%, #2f6feb 100%);
-    color: white; padding: 30px 40px 22px; box-shadow: var(--shadow);
+    background: var(--card-bg); padding: 20px 32px 14px; border-bottom: 1px solid var(--border);
   }}
   .hero h1 {{ margin: 0 0 4px; font-size: 26px; font-weight: 650; letter-spacing: -0.01em; }}
-  .hero .subtitle {{ color: #cfe0ff; margin: 0; font-size: 13px; }}
+  .hero .subtitle {{ color: var(--muted); margin: 0; font-size: 13px; }}
   .nav-pills {{
     display: flex; gap: 6px; flex-wrap: wrap; margin-top: 16px;
   }}
   .nav-pills a {{
-    color: #e3ecff; text-decoration: none; font-size: 12.5px; font-weight: 600;
-    padding: 6px 12px; border-radius: 999px; background: rgba(255,255,255,0.12);
-    border: 1px solid rgba(255,255,255,0.22); transition: background 0.15s;
+    color: var(--accent-dark); text-decoration: none; font-size: 13px; font-weight: 600;
+    padding: 6px 12px; border-radius: 6px; background: #f6f8fb;
+    border: 1px solid var(--border); transition: background 0.15s;
   }}
-  .nav-pills a:hover {{ background: rgba(255,255,255,0.26); }}
-  .page {{ padding: 24px 40px 60px; }}
+  .nav-pills a:hover {{ background: #eef3ff; }}
+  .page {{ padding: 20px 32px 48px; max-width: 1600px; margin: auto; }}
   h2 {{ font-size: 16px; margin: 0 0 2px; }}
   .section {{ margin-bottom: 8px; scroll-margin-top: 14px; }}
-  .section-head {{ display: flex; align-items: baseline; gap: 10px; margin: 40px 0 14px; }}
-  .section-head .num {{
-    display: inline-flex; align-items: center; justify-content: center;
-    width: 26px; height: 26px; border-radius: 7px; background: var(--accent); color: white;
-    font-size: 13px; font-weight: 700; flex: 0 0 auto;
-  }}
+  .section-head {{ display: flex; align-items: baseline; gap: 10px; margin: 28px 0 10px; }}
+  #sec-overview > .section-head {{ margin-top: 0; }}
   .section-head h2 {{ font-size: 19px; font-weight: 650; }}
-  .section-desc {{ color: var(--muted); font-size: 13px; margin: 0 0 16px 36px; max-width: 780px; }}
+  .section-desc {{ color: var(--muted); font-size: 13px; margin: 0 0 16px; max-width: 780px; }}
+  .trend-heading {{ justify-content: space-between; flex-wrap: wrap; }}
+  .trend-heading .trend-toggle {{ margin: 0; }}
   .layout {{ display: flex; gap: 24px; align-items: flex-start; }}
-  .sidebar {{ flex: 0 0 270px; display: flex; flex-direction: column; gap: 14px; position: sticky; top: 14px; max-height: 92vh; transition: flex-basis 0.15s, width 0.15s; }}
-  .layout.sidebar-collapsed .sidebar {{ flex: 0 0 auto; }}
-  .layout.sidebar-collapsed .side-panel,
-  .layout.sidebar-collapsed .sidebar .hint {{ display: none; }}
-  .side-panel {{ background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; padding: 14px; overflow-y: auto; box-shadow: var(--shadow); }}
-  #proj-panel {{ max-height: 38vh; }}
-  #model-panel {{ max-height: 26vh; }}
-  #provider-panel {{ max-height: 20vh; }}
+  .sidebar-shell {{ flex: 0 0 260px; min-width: 0; display: flex; flex-direction: column; gap: 12px; position: sticky; top: 14px; max-height: calc(100vh - 28px); }}
+  .sidebar {{ min-height: 0; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; }}
+  .layout.sidebar-collapsed .sidebar-shell {{ flex-basis: 44px; }}
+  .layout.sidebar-collapsed .sidebar {{ display: none; }}
+  .layout.sidebar-collapsed #sidebar-toggle-label {{ display: none; }}
+  .side-panel {{ background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; padding: 14px; }}
   .side-panel h2 {{ margin-top: 0; font-size: 14px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }}
   .sidebar-toggle {{
-    display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%;
-    padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--card-bg);
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+    padding: 8px 10px; min-height: 44px; flex-shrink: 0; border: 1px solid var(--border); border-radius: 8px; background: var(--card-bg);
     cursor: pointer; font-size: 12.5px; font-weight: 650; color: var(--muted); box-shadow: var(--shadow);
   }}
   .sidebar-toggle:hover {{ background: #f6f8fb; color: var(--text); }}
-  .layout.sidebar-collapsed .sidebar-toggle {{ width: 40px; padding: 8px; }}
-  .layout.sidebar-collapsed .sidebar-toggle .toggle-label {{ display: none; }}
   .main {{ flex: 1; min-width: 0; }}
-  .kpi-row {{ display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 8px; }}
+  .kpi-row {{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-bottom: 12px; }}
+  /* Aggregate KPIs share one blue accent; chart palettes follow the encoded data type. */
   .kpi {{
-    background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px;
-    padding: 14px 20px; min-width: 132px; box-shadow: var(--shadow); transition: box-shadow 0.15s, transform 0.15s;
+    background: var(--card-bg); border: 1px solid var(--border); border-top: 3px solid #0072b2; border-radius: 10px;
+    padding: 14px 18px; min-width: 0;
   }}
-  .kpi:hover {{ box-shadow: var(--shadow-hover); transform: translateY(-1px); }}
-  .kpi-value {{ font-size: 21px; font-weight: 700; letter-spacing: -0.01em; }}
-  .kpi-label {{ font-size: 11.5px; color: var(--muted); margin-top: 3px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; }}
+  .kpi-value {{ font-size: 36px; font-weight: 700; letter-spacing: -0.01em; }}
+  .kpi-label {{ font-size: 13px; color: var(--muted); margin-bottom: 4px; font-weight: 600; }}
+  .kpi-note {{ font-size: 12px; color: var(--muted); margin-top: 6px; }}
+  .scope-summary {{ color: var(--muted); font-size: 13px; margin-bottom: 12px; overflow-wrap: anywhere; }}
+  .filter-controls {{ display: flex; gap: 12px; align-items: center; margin-top: 10px; flex-wrap: wrap; }}
+  .filter-summary {{ flex: 1; min-width: 150px; font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }}
+  .filter-search {{ display: block; width: 100%; padding: 8px; margin-bottom: 10px; border: 1px solid var(--border); border-radius: 6px; font: inherit; font-size: 14px; }}
+  .filter-item {{ display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }}
+  .filter-item[hidden], [hidden] {{ display: none !important; }}
+  .filter-item .proj-item {{ flex: 1; min-width: 0; }}
+  .filter-only, .filter-more {{ border: 0; background: transparent; color: var(--accent-dark); padding: 8px; cursor: pointer; font: inherit; font-size: 13px; }}
+  .filter-more {{ margin-top: 6px; }}
+  .filter-blocked {{ width: 100%; padding-left: 22px; color: var(--muted); font-size: 12px; }}
+  .provider-excluded .proj-item {{ color: var(--muted); }}
+  .filter-empty {{ font-size: 13px; color: var(--muted); }}
+  .provider-legend {{ display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; color: var(--muted); margin: 6px 0; }}
+  .provider-key {{ display: inline-flex; align-items: center; gap: 5px; }}
+  .provider-swatch {{ width: 10px; height: 10px; display: inline-block; border-radius: 2px; flex-shrink: 0; }}
+  button:focus-visible, a:focus-visible, input:focus-visible, summary:focus-visible {{ outline: 2px solid var(--accent-dark); outline-offset: 3px; }}
+  summary {{ cursor: pointer; }}
   .grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }}
   .card {{
     background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; padding: 14px;
-    margin-bottom: 0; box-shadow: var(--shadow); transition: box-shadow 0.15s;
+    margin-bottom: 0; min-width: 0; box-shadow: var(--shadow); transition: box-shadow 0.15s;
   }}
   .card:hover {{ box-shadow: var(--shadow-hover); }}
   table {{ border-collapse: collapse; width: 100%; background: var(--card-bg); font-size: 13px; }}
@@ -904,7 +953,7 @@ def build_dashboard(data: pd.DataFrame, out_path: str, title: str,
   .proj-buttons {{ display: flex; gap: 8px; margin-bottom: 10px; }}
   .proj-buttons button {{ flex: 1; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: #f6f8fb; cursor: pointer; font-size: 12px; font-weight: 600; }}
   .proj-buttons button:hover {{ background: #e9eef7; }}
-  .proj-item {{ display: flex; align-items: center; gap: 6px; padding: 4px 2px; font-size: 13px; cursor: pointer; border-radius: 4px; }}
+  .proj-item {{ display: flex; align-items: center; gap: 6px; padding: 6px 2px; font-size: 14px; cursor: pointer; border-radius: 4px; }}
   .proj-item:hover {{ background: #f6f8fb; }}
   .proj-name {{ flex: 1; overflow-wrap: anywhere; }}
   .proj-tok {{ color: var(--muted); font-size: 11px; }}
@@ -923,7 +972,7 @@ def build_dashboard(data: pd.DataFrame, out_path: str, title: str,
   .token-glossary-note {{ margin: 0; font-size: 11.5px; color: var(--muted); }}
   .toolbar {{
     background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px;
-    padding: 14px 18px; margin-bottom: 28px; box-shadow: var(--shadow);
+    padding: 12px 16px; margin-bottom: 14px; box-shadow: var(--shadow);
   }}
   .metric-toggle {{ display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }}
   .metric-label {{ font-size: 13px; font-weight: 650; cursor: help; }}
@@ -934,13 +983,12 @@ def build_dashboard(data: pd.DataFrame, out_path: str, title: str,
   .metric-toggle button:hover, .date-toggle button:hover {{ background: #e9eef7; }}
   .metric-toggle button.active {{ background: var(--accent); color: white; border-color: var(--accent); }}
   .date-toggle {{ display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }}
-  .date-toggle button.active {{ background: var(--good); color: white; border-color: var(--good); }}
+  .date-toggle button.active {{ background: var(--accent); color: white; border-color: var(--accent); }}
   .date-range-hint {{ font-size: 12px; color: var(--muted); font-weight: 600; }}
   .trend-toggle {{ display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 0 12px 36px; }}
   .trend-toggle button {{ padding: 6px 14px; border: 1px solid var(--border); border-radius: 999px; background: #f6f8fb; cursor: pointer; font-size: 13px; font-weight: 600; }}
   .trend-toggle button:hover {{ background: #e9eef7; }}
   .trend-toggle button.active {{ background: var(--accent); color: white; border-color: var(--accent); }}
-  .kpi {{ cursor: help; }}
   .card {{ position: relative; }}
   .info-icon {{
     position: absolute; top: 10px; right: 12px; width: 20px; height: 20px; border-radius: 50%;
@@ -949,7 +997,7 @@ def build_dashboard(data: pd.DataFrame, out_path: str, title: str,
   }}
   .info-icon:hover {{ background: #d8dee7; color: var(--text); }}
   .insight-bar {{
-    display: flex; flex-direction: column; gap: 8px; margin: 0 0 18px 36px; max-width: 780px;
+    display: flex; flex-direction: column; gap: 8px; margin: 0 0 14px; max-width: 100%;
   }}
   .insight {{
     display: flex; gap: 10px; align-items: flex-start; font-size: 13px; background: #eef4ff;
@@ -959,42 +1007,78 @@ def build_dashboard(data: pd.DataFrame, out_path: str, title: str,
   .insight.good {{ background: #edf9f0; border-left-color: var(--good); color: #14532d; }}
   .insight b {{ font-weight: 700; }}
   .footer-note {{ margin-top: 40px; padding-top: 18px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); }}
+  .chart-help {{ font-size: 13px; color: var(--muted); margin-bottom: 8px; overflow-wrap: anywhere; }}
+  .chart-help p {{ margin: 8px 0; }}
+  @media (max-width: 1100px) {{
+    .grid {{ grid-template-columns: minmax(0, 1fr); }}
+    .kpi-value {{ font-size: 30px; }}
+  }}
+  @media (max-width: 760px) {{
+    .hero {{ padding: 16px; }}
+    .hero h1 {{ font-size: 22px; }}
+    .page {{ padding: 16px; }}
+    .layout {{ display: block; }}
+    .sidebar-shell {{ position: static; max-height: none; margin-bottom: 16px; }}
+    .sidebar-toggle {{ align-self: flex-start; }}
+    .layout.sidebar-collapsed #sidebar-toggle-label {{ display: inline; }}
+    .kpi-row {{ grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }}
+    .kpi:last-child {{ grid-column: 1 / -1; }}
+    .kpi {{ padding: 12px; }}
+    .kpi-value {{ font-size: 28px; }}
+    .section-desc, .trend-toggle {{ margin-left: 0; }}
+    .card {{ padding: 10px; }}
+    .toolbar {{ padding: 12px; }}
+    .date-range-hint {{ flex-basis: 100%; }}
+    .metric-toggle {{ margin-top: 8px; }}
+    button, .nav-pills a {{ min-height: 44px; }}
+    .table-filter {{ min-width: 0; flex-wrap: wrap; }}
+    .table-filter input {{ min-width: 0; width: 100%; }}
+    .token-glossary-grid {{ grid-template-columns: minmax(0, 1fr); }}
+    .proj-item {{ min-height: 44px; }}
+  }}
 </style>
 </head>
 <body>
   <div class="hero">
     <h1>{title_html}</h1>
-    <p class="subtitle">Generated {datetime.now():%Y-%m-%d %H:%M} &middot; source: Copilot CLI session-store.db exports &middot; uncheck a project, model, or provider in the sidebar to exclude it from every chart</p>
+    <p class="subtitle"><span id="data-freshness"></span> &middot; Generated {datetime.now():%Y-%m-%d %H:%M} &middot; Local session-store exports</p>
     <div class="nav-pills">
       <a href="#sec-overview">Overview</a>
       <a href="#sec-trends">Trends</a>
-      <a href="#sec-value">Cost &amp; Value</a>
+      <a href="#sec-value">Pricing efficiency</a>
       <a href="#sec-patterns">Work Patterns</a>
       <a href="#sec-composition">Composition</a>
       <a href="#sec-detail">Task Detail</a>
     </div>
   </div>
   <div class="page">
-  <div class="layout" id="layout">
-    <div class="sidebar">
-      <button class="sidebar-toggle" id="sidebar-toggle" onclick="toggleSidebar()" title="Show/hide the Projects, Models, and Providers filter panel">
-        <span id="sidebar-toggle-icon">&laquo;</span><span class="toggle-label">Hide filters</span>
+  <div class="layout sidebar-collapsed" id="layout">
+    <div class="sidebar-shell" id="sidebar-shell">
+      <button class="sidebar-toggle" id="sidebar-toggle" onclick="toggleSidebar()" aria-controls="filter-panel" aria-expanded="false" aria-label="Show filters" title="Show filters">
+        <span id="sidebar-toggle-icon" aria-hidden="true">&raquo;</span><span id="sidebar-toggle-label">Show filters</span>
       </button>
+      <aside class="sidebar" id="filter-panel" aria-label="Usage filters">
       <div class="side-panel" id="proj-panel">
         <h2>Projects</h2>
+        <input class="filter-search" id="project-search" type="search" aria-label="Search projects" placeholder="Search projects" oninput="searchFilters('project', this.value)">
         <div class="proj-buttons">
           <button onclick="setAll('project', true)">Select all</button>
           <button onclick="setAll('project', false)">Select none</button>
         </div>
         <div id="proj-list">{project_checkbox_items}</div>
+        <p id="project-empty" class="filter-empty" hidden>No matching projects. Clear the search to see all.</p>
+        <button class="filter-more" id="project-more" onclick="showMoreFilters('project')">Show more</button>
       </div>
       <div class="side-panel" id="model-panel">
         <h2>Models</h2>
+        <input class="filter-search" id="model-search" type="search" aria-label="Search models" placeholder="Search models" oninput="searchFilters('model', this.value)">
         <div class="proj-buttons">
           <button onclick="setAll('model', true)">Select all</button>
           <button onclick="setAll('model', false)">Select none</button>
         </div>
         <div id="model-list">{model_checkbox_items}</div>
+        <p id="model-empty" class="filter-empty" hidden>No matching models. Clear the search to see all.</p>
+        <button class="filter-more" id="model-more" onclick="showMoreFilters('model')">Show more</button>
       </div>
       <div class="side-panel" id="provider-panel">
         <h2>Providers</h2>
@@ -1003,19 +1087,18 @@ def build_dashboard(data: pd.DataFrame, out_path: str, title: str,
           <button onclick="setAll('provider', false)">Select none</button>
         </div>
         <div id="provider-list">{provider_checkbox_items}</div>
-        <div class="hint">Provider is inferred heuristically from each model's name (not official billing metadata) &mdash; see README. Disabling a provider excludes ALL of its models from every chart, even if those models' own checkboxes above stay checked. Project, model, provider, and date filters all apply together (every enabled filter must match - AND, not OR).</div>
+        <p id="provider-empty" class="filter-empty" hidden>No matching providers.</p>
+        <button class="filter-more" id="provider-more" onclick="showMoreFilters('provider')">Show more</button>
+        <details class="hint"><summary>How provider filters work</summary>Provider is inferred from the model name, not billing metadata. Excluding a provider excludes all its models. Project, model, provider and date filters apply together. Select all/none applies to the whole group, including search-hidden items. Only selects one item in that group without changing other filters.</details>
       </div>
       <div class="hint">Your selections are remembered in this browser for this dashboard file.</div>
+      </aside>
     </div>
-    <div class="main">
+    <main class="main" id="dashboard-main">
 
       <div class="section" id="sec-overview">
-        <div class="section-head"><span class="num">1</span><h2>Overview</h2></div>
-        <p class="section-desc">The headline numbers for whatever you've currently selected (projects, models, date range). Use this as your at-a-glance check before reading the detail charts below.</p>
-        <div class="kpi-row" id="kpi-row"></div>
-        <div id="insight-overview" class="insight-bar"></div>
-
-        <div class="toolbar">
+        <div class="section-head"><h2>Overview</h2></div>
+        <div class="toolbar" id="usage-toolbar">
           <div class="date-toggle">
             <span class="metric-label" title="Quick filters compute 'last N days' relative to the most recent date present in your data export (not necessarily today's real-world date). Choose 'All time' to see every row in the loaded CSV(s).">Date range:</span>
             <button id="date-7" onclick="setDateFilter('7')">Last 7 days</button>
@@ -1029,8 +1112,31 @@ def build_dashboard(data: pd.DataFrame, out_path: str, title: str,
             <span class="metric-label" title="Switches every chart's value axis between raw token counts and estimated dollar cost. Does not change which projects/models/dates are included.">Chart metric:</span>
             <button id="metric-tokens" onclick="setMetric('tokens')">Tokens</button>
             <button id="metric-cost" onclick="setMetric('cost')">Estimated cost ($)</button>
-            <span class="hint" style="margin:0 0 0 10px;">Cost = published GitHub Copilot per-token list prices &middot; estimate only, may not match your actual invoice (plan allowances/discounts not reflected)</span>
           </div>
+          <div class="filter-controls">
+            <span id="filter-summary" class="filter-summary" role="status"></span>
+            <button class="table-action" onclick="resetFilters()" title="Include all projects, models, providers and dates, and clear filter searches">Reset filters</button>
+          </div>
+        </div>
+        <div class="kpi-row" id="kpi-row"></div>
+        <div id="scope-summary" class="scope-summary"></div>
+        <div id="insight-overview" class="insight-bar"></div>
+
+        <div id="sec-trends" class="section">
+          <div class="section-head trend-heading">
+            <h2>Usage over time</h2>
+            <div class="trend-toggle">
+              <span class="metric-label">Group by:</span>
+              <button id="trend-day" onclick="setTrendGranularity('day')">Day</button>
+              <button id="trend-week" onclick="setTrendGranularity('week')">Week</button>
+              <button id="trend-month" onclick="setTrendGranularity('month')">Month</button>
+            </div>
+          </div>
+          <div class="card">
+            <span class="info-icon" title="Usage for the selected projects, models and dates. Weeks start on Monday; months use calendar months. The latest period may be incomplete.">?</span>
+            <div id="fig_trend" style="height:300px;"></div>
+          </div>
+          <div id="insight-trends" class="insight-bar"></div>
         </div>
 
         <div class="grid">
@@ -1039,7 +1145,8 @@ def build_dashboard(data: pd.DataFrame, out_path: str, title: str,
             <div id="fig_project" style="height:430px;"></div>
           </div>
           <div class="card">
-            <span class="info-icon" title="Each slice is one model's share of the current metric (tokens or cost), summed across your currently selected projects, models, and date range. Slice size + label percentage always add up to 100% of what's selected.">?</span>
+            <span class="info-icon" title="Models ranked by selected tokens or estimated cost. Each bar shows its value and share of the current selection. Hover a bar for the full model name and exact value.">?</span>
+            <div class="provider-legend" id="model-provider-legend" aria-label="Provider colours"></div>
             <div id="fig_model" style="height:400px;"></div>
           </div>
           <div class="card">
@@ -1050,32 +1157,15 @@ def build_dashboard(data: pd.DataFrame, out_path: str, title: str,
         </div>
       </div>
 
-      <div class="section" id="sec-trends">
-        <div class="section-head"><span class="num">2</span><h2>Trends over time</h2></div>
-        <p class="section-desc">How usage moves over time &mdash; look here for spikes tied to specific work pushes, or a steady baseline that suggests routine usage.</p>
-        <div class="trend-toggle">
-          <span class="metric-label" title="Choose the time bucket used to aggregate the trend chart. Week uses Monday-starting weeks; month uses calendar months.">Group by:</span>
-          <button id="trend-day" onclick="setTrendGranularity('day')">Day</button>
-          <button id="trend-week" onclick="setTrendGranularity('week')">Week</button>
-          <button id="trend-month" onclick="setTrendGranularity('month')">Month</button>
-        </div>
-        <div id="insight-trends" class="insight-bar"></div>
-        <div class="grid">
-          <div class="card full">
-            <span class="info-icon" title="One point per selected day, Monday-starting week, or calendar month: the sum of the current metric across all selected projects/models within that period. Respects the date-range filter above.">?</span>
-            <div id="fig_trend" style="height:400px;"></div>
-          </div>
-        </div>
-      </div>
-
       <div class="section" id="sec-value">
-        <div class="section-head"><span class="num">3</span><h2>Cost &amp; value</h2></div>
+        <div class="section-head"><h2>Cost &amp; pricing efficiency</h2></div>
         <p class="section-desc">Which models deliver the most tokens per dollar spent, and how reasoning effort (a setting, not a model choice) drives cost up. Value here means <b>pricing efficiency</b>, not output quality &mdash; see each chart's <span title="hover the ? icons on the charts below for the full caveat">(?)</span> for details. Cost figures depend on <code>total_nano_aiu</code> coverage being complete for the selected calls &mdash; see the coverage KPI and any warning banner below before trusting a $0 or "cheapest" result.</p>
         <div id="insight-coverage" class="insight-bar"></div>
         <div id="insight-value" class="insight-bar"></div>
         <div class="grid">
           <div class="card full">
-            <span class="info-icon" title="Tokens received per US dollar of estimated list-price cost (total tokens \u00f7 estimated cost), summed across your currently selected projects/models/dates. Higher bars = more tokens for the same spend. This is a raw PRICING-EFFICIENCY ratio only - it does not measure output quality, accuracy, or how many tokens a model actually needs to complete a task well, and models used mostly at high reasoning-effort will look worse here even if their answers are better, since reasoning tokens add cost. Number in parentheses = call count, for a sense of how much data backs each bar.">?</span>
+            <span class="info-icon" title="Tokens received per US dollar of estimated list-price cost (total tokens \u00f7 estimated cost), summed across your currently selected projects/models/dates. Higher bars = more tokens for the same spend. This is a raw PRICING-EFFICIENCY ratio only - it does not measure output quality, accuracy, or how many tokens a model actually needs to complete a task well. Hover a bar for its call count. A model marked * also has calls with incomplete cost coverage that are excluded from this ratio.">?</span>
+            <div class="provider-legend" id="value-provider-legend" aria-label="Provider colours"></div>
             <div id="fig_value" style="height:420px;"></div>
           </div>
           {value_effort_card}
@@ -1083,7 +1173,7 @@ def build_dashboard(data: pd.DataFrame, out_path: str, title: str,
       </div>
 
       <div class="section" id="sec-patterns">
-        <div class="section-head"><span class="num">4</span><h2>Work patterns</h2></div>
+        <div class="section-head"><h2>Work patterns</h2></div>
         <p class="section-desc">A transparent, rule-based view of the kinds of work represented in task summaries &mdash; useful for spotting shifts between exploration, planning, execution, and review. These are inferred themes, not measures of productivity or individual performance.</p>
         <div id="work-patterns-note" class="hint" style="margin:0 0 16px 36px;"></div>
         <div class="grid">
@@ -1093,6 +1183,7 @@ def build_dashboard(data: pd.DataFrame, out_path: str, title: str,
           </div>
           <div class="card">
             <span class="info-icon" title="Shows the current metric for inferred task themes split by model. This can indicate which models are being used for exploration, analysis, planning, execution, or review work.">?</span>
+            <p class="hint">Viridis shading: purple = lower usage, yellow = higher usage in this selection.</p>
             <div id="fig_theme_model" style="height:420px;"></div>
           </div>
           <div class="card">
@@ -1103,15 +1194,16 @@ def build_dashboard(data: pd.DataFrame, out_path: str, title: str,
       </div>
 
       <div class="section" id="sec-composition">
-        <div class="section-head"><span class="num">5</span><h2>Composition</h2></div>
+        <div class="section-head"><h2>Composition</h2></div>
         <p class="section-desc">How your top projects break down by model, and how tokens break down by category &mdash; useful for spotting projects that lean heavily on one (possibly expensive) model, or heavy cache/reasoning usage that isn't visible in the headline "Total tokens" figure.</p>
         <div class="grid">
           <div class="card full">
-            <span class="info-icon" title="The same top-15 projects as 'Top Projects' above, but each bar is split (stacked) by model, with colour = model. Segment height shows how much of that project's usage came from each model, so you can see model mix per project at a glance.">?</span>
+            <span class="info-icon" title="The same top-15 projects as 'Top Projects' above, split into model segments. This chart uses a distinct categorical colour per model, independent of the provider colours elsewhere. The mapping stays fixed when filtering or switching metrics. Click a model in the legend to hide or show its segments.">?</span>
+            <p class="hint">Colour identifies the individual model in this chart. Use the model legend below.</p>
             <div id="fig_stack" style="height:440px;"></div>
           </div>
-          <div class="card full token-glossary">
-            <h3 class="token-glossary-title">What do these token categories mean?</h3>
+          <details class="card full token-glossary">
+            <summary class="token-glossary-title">What do these token categories mean?</summary>
             <p class="token-glossary-intro">Every call to a model is billed in a few different "flavours" of token. The two that trip people up most are <strong>cache read</strong> and <strong>cache write</strong> &mdash; both are about prompt caching, a mechanism models use to avoid re-processing context (like a long system prompt, file contents, or earlier conversation turns) from scratch on every single call.</p>
             <dl class="token-glossary-grid">
               <div class="token-glossary-item">
@@ -1136,7 +1228,7 @@ def build_dashboard(data: pd.DataFrame, out_path: str, title: str,
               </div>
             </dl>
             <p class="token-glossary-note">These five categories are <strong>independent, additive counters</strong> &mdash; not five slices of one pie. "Total tokens" elsewhere in this dashboard is input + output <em>only</em>; cache-read, cache-write, and reasoning are layered on top and won't necessarily move in lockstep with it or with cost (since each category is billed at a different rate). Cache read/write only appear for models and CLI versions that support prompt caching, so seeing zero for a given model isn't unusual or a data problem.</p>
-          </div>
+          </details>
           <div class="card full">
             <span class="info-icon" title="Total input, output, cache-read, cache-write, and reasoning tokens across your currently selected projects/models/dates. These are FIVE INDEPENDENT counters reported by Copilot CLI's usage log, not five parts of one pie: 'Total tokens' (shown elsewhere in this dashboard, and used for the Tokens metric/KPI) is defined as input + output ONLY - cache-read, cache-write, and reasoning tokens are separate, additive categories layered on top, and are not guaranteed to sum to Total tokens or to move in lockstep with estimated cost (which weights each category differently - e.g. cached input is typically billed cheaper per token than fresh input). Always shown as raw token counts, even when the Tokens/Cost toggle above is set to cost, since these categories are not individually costed in this export.">?</span>
             <div id="fig_token_composition" style="height:380px;"></div>
@@ -1146,13 +1238,13 @@ def build_dashboard(data: pd.DataFrame, out_path: str, title: str,
       </div>
 
       <div class="section" id="sec-detail">
-        <div class="section-head"><span class="num">6</span><h2>Task detail</h2></div>
+        <div class="section-head"><h2>Task detail</h2></div>
         <p class="section-desc">The individual tasks driving the totals above, ranked by the current chart metric. Search across all tasks, sort any column, or copy the displayed top 20 rows.</p>
         <div id="table-wrap"></div>
       </div>
 
       <div class="footer-note">Copilot CLI Token Usage Dashboard &middot; generated locally from session-store.db exports &middot; all figures are estimates based on published list pricing.</div>
-    </div>
+    </main>
   </div>
   </div>
 
@@ -1194,17 +1286,22 @@ RAW.forEach(r => {{
 const PROJECT_ORDER = {project_order_json};
 const MODEL_ORDER = {model_order_json};
 const PROVIDER_ORDER = {provider_order_json};
-// Shared qualitative palette so a model's colour is consistent across the pie, stacked-bar,
-// and value-for-money charts - critical for scanning multiple charts without re-reading legends.
-const MODEL_PALETTE = ["#2f6feb", "#f0883e", "#3fb950", "#a371f7", "#db6d28", "#79c0ff", "#f778ba", "#56d364", "#bf8700", "#8250df", "#ff7b72", "#39c5cf"];
-const MODEL_COLORS = {{}};
-MODEL_ORDER.forEach((m, i) => {{ MODEL_COLORS[m] = MODEL_PALETTE[i % MODEL_PALETTE.length]; }});
-// Provider colors are computed once in Python (provider_classifier.py) and embedded
-// verbatim here - fixed per provider NAME (not by rank/order in this dataset), so a
-// provider's colour never shifts across different filtered views or exports. This is
-// an intentionally separate palette/dict from MODEL_COLORS above so the Provider Mix
-// chart never accidentally shares (or clashes with) an individual model's legend colour.
+// One canonical provider palette, independent of rank or filter state.
+// Models inherit the provider already classified in Python, without re-inferring it.
 const PROVIDER_COLORS = {provider_colors_json};
+const MODEL_COLORS = Object.fromEntries(RAW.map(r => [r.model, PROVIDER_COLORS[r.provider] || "#8c959f"]));
+const MODEL_MIX_COLORS = {model_mix_colors_json};
+// Okabe-Ito separates nominal categories; Viridis encodes ordered values.
+// These mappings are keyed by meaning, never by the current ranking.
+const OKABE_ITO = {{
+  blue: "#0072b2", sky: "#56b4e9", green: "#009e73",
+  orange: "#e69f00", purple: "#cc79a7", vermilion: "#d55e00", yellow: "#f0e442",
+}};
+const UNKNOWN_COLOR = "#8c959f";
+const EFFORT_COLORS = {{
+  none: "#440154", low: "#31688e", medium: "#35b779", high: "#fde725",
+  "n/a": UNKNOWN_COLOR,
+}};
 const HAS_TASKS = {str(has_tasks).lower()};
 const STORAGE_KEY_PROJECT = {storage_key_project_json};
 const STORAGE_KEY_MODEL = {storage_key_model_json};
@@ -1235,6 +1332,77 @@ const FILTER_KINDS = {{
   model: {{ storageKey: STORAGE_KEY_MODEL, defaultExcluded: DEFAULT_EXCLUDED_MODELS, order: MODEL_ORDER, checkboxClass: "model-check" }},
   provider: {{ storageKey: STORAGE_KEY_PROVIDER, defaultExcluded: DEFAULT_EXCLUDED_PROVIDERS, order: PROVIDER_ORDER, checkboxClass: "provider-check" }},
 }};
+const filterSearch = {{ project: "", model: "", provider: "" }};
+const filterLimits = {{ project: 8, model: 8, provider: 8 }};
+const MODEL_PROVIDERS = new Map(RAW.map(r => [r.model, r.provider]));
+
+function searchFilters(kind, value) {{
+  filterSearch[kind] = value.trim().toLowerCase();
+  filterLimits[kind] = 8;
+  updateFilterList(kind);
+}}
+
+function showMoreFilters(kind) {{
+  filterLimits[kind] += 10;
+  updateFilterList(kind);
+}}
+
+function updateFilterList(kind) {{
+  let matched = 0;
+  document.querySelectorAll("." + FILTER_KINDS[kind].checkboxClass).forEach(cb => {{
+    const matches = cb.value.toLowerCase().includes(filterSearch[kind]);
+    cb.closest(".filter-item").hidden = !matches || ++matched > filterLimits[kind];
+  }});
+  const more = document.getElementById(kind + "-more");
+  more.hidden = matched <= filterLimits[kind];
+  more.textContent = "Show more (" + Math.max(0, matched - filterLimits[kind]) + " remaining)";
+  document.getElementById(kind + "-empty").hidden = matched > 0;
+}}
+
+function selectOnly(kind, index) {{
+  const order = FILTER_KINDS[kind].order;
+  saveExcluded(kind, new Set(order.filter((_, i) => i !== index)));
+  render();
+}}
+
+function resetFilters() {{
+  Object.keys(FILTER_KINDS).forEach(kind => {{
+    saveExcluded(kind, new Set());
+    filterSearch[kind] = "";
+    filterLimits[kind] = 8;
+    const input = document.getElementById(kind + "-search");
+    if (input) input.value = "";
+  }});
+  localStorage.setItem(STORAGE_KEY_DATEFILTER, "all");
+  render();
+}}
+
+function updateFilterState(excludedProviders) {{
+  document.querySelectorAll(".model-check").forEach(cb => {{
+    const blocked = excludedProviders.has(MODEL_PROVIDERS.get(cb.value));
+    const item = cb.closest(".filter-item");
+    cb.disabled = blocked;
+    item.classList.toggle("provider-excluded", blocked);
+    item.querySelector(".filter-blocked").hidden = !blocked;
+    item.querySelector(".filter-only").disabled = blocked;
+  }});
+  Object.keys(FILTER_KINDS).forEach(updateFilterList);
+  const parts = Object.entries(FILTER_KINDS).map(([kind, cfg]) => {{
+    const excluded = loadExcluded(kind);
+    const count = cfg.order.filter(value => excluded.has(value)).length;
+    return count ? `${{count}} ${{kind}}${{count === 1 ? "" : "s"}} excluded` : "";
+  }}).filter(Boolean);
+  document.getElementById("filter-summary").textContent = parts.length
+    ? parts.join(" · ") + (excludedProviders.size ? " (including their models)" : "")
+    : "All projects, models and providers";
+}}
+
+function renderProviderLegend(id, providers) {{
+  document.getElementById(id).innerHTML = Object.keys(PROVIDER_COLORS)
+    .filter(provider => providers.has(provider))
+    .map(provider => `<span class="provider-key"><span class="provider-swatch" aria-hidden="true" style="background:${{PROVIDER_COLORS[provider]}}"></span>${{escapeHtml(provider)}}</span>`)
+    .join("");
+}}
 
 function loadExcluded(kind) {{
   const cfg = FILTER_KINDS[kind];
@@ -1284,11 +1452,11 @@ function computeCostCoverage(rows) {{
 }}
 
 const TOKEN_CATEGORIES = [
-  {{ key: "input_tokens", label: "Input" }},
-  {{ key: "output_tokens", label: "Output" }},
-  {{ key: "cache_read_tokens", label: "Cache read" }},
-  {{ key: "cache_write_tokens", label: "Cache write" }},
-  {{ key: "reasoning_tokens", label: "Reasoning" }},
+  {{ key: "input_tokens", label: "Input", color: OKABE_ITO.blue }},
+  {{ key: "output_tokens", label: "Output", color: OKABE_ITO.green }},
+  {{ key: "cache_read_tokens", label: "Cache read", color: OKABE_ITO.sky }},
+  {{ key: "cache_write_tokens", label: "Cache write", color: OKABE_ITO.orange }},
+  {{ key: "reasoning_tokens", label: "Reasoning", color: OKABE_ITO.purple }},
 ];
 
 // Token-category composition summary for a set of (already filtered) rows.
@@ -1326,6 +1494,17 @@ function fmtCurrency(n) {{
   return sign + "$" + n.toFixed(2);
 }}
 
+function fmtHeadline(n) {{
+  if (Math.abs(n) < 1000) return fmt(n);
+  const unit = Math.abs(n) >= 1e9 ? [1e9, "B"] : Math.abs(n) >= 1e6 ? [1e6, "M"] : [1e3, "K"];
+  return (n / unit[0]).toLocaleString(undefined, {{ maximumFractionDigits: 2 }}) + unit[1];
+}}
+
+function setPressed(button, pressed) {{
+  button.classList.toggle("active", pressed);
+  button.setAttribute("aria-pressed", String(pressed));
+}}
+
 function getMetric() {{ return localStorage.getItem(STORAGE_KEY_METRIC) || "tokens"; }}
 
 function setMetric(metric) {{
@@ -1350,7 +1529,7 @@ function setTrendGranularity(v) {{
 function updateTrendGranularityButtons(granularity) {{
   ["day", "week", "month"].forEach(value => {{
     const button = document.getElementById("trend-" + value);
-    if (button) button.classList.toggle("active", value === granularity);
+    if (button) setPressed(button, value === granularity);
   }});
 }}
 
@@ -1537,12 +1716,16 @@ const TASK_THEME_MODE = {{
   "Other": "Other",
 }};
 const TASK_THEME_COLORS = {{
-  "Explore & learn": "#8250df",
-  "Analyze & decide": "#a371f7",
-  "Plan & organize": "#bf8700",
-  "Build & implement": "#2f6feb",
-  "Review & communicate": "#1a7f37",
-  "Other": "#8c959f",
+  "Explore & learn": OKABE_ITO.blue,
+  "Analyze & decide": OKABE_ITO.sky,
+  "Plan & organize": OKABE_ITO.orange,
+  "Build & implement": OKABE_ITO.green,
+  "Review & communicate": OKABE_ITO.purple,
+  "Other": UNKNOWN_COLOR,
+}};
+const WORK_MODE_COLORS = {{
+  Exploration: OKABE_ITO.blue, Execution: OKABE_ITO.green, Planning: OKABE_ITO.orange,
+  "Review/support": OKABE_ITO.purple, Other: UNKNOWN_COLOR,
 }};
 
 function inferTaskTheme(summary) {{
@@ -1564,34 +1747,83 @@ function computeCutoffDate(dateFilter) {{
   return cutoff.toISOString().slice(0, 10);
 }}
 
+const chartLayouts = new Map();
+let chartRevision = 0;
+function drawChart(id, traces, layout, config) {{
+  // Plotly keeps zoom and pie-legend state until the selected data changes.
+  layout = {{ ...layout, uirevision: chartRevision }};
+  chartLayouts.set(id, {{ layout, config }});
+  const element = document.getElementById(id);
+  if (id === "fig_stack") {{
+    const legendColumns = Math.max(1, Math.floor((element.clientWidth - 80) / 220));
+    const legendHeight = Math.ceil(traces.length / legendColumns) * 24 + 20;
+    element.style.height = (500 + legendHeight) + "px";
+    layout = {{ ...layout, margin: {{ ...layout.margin, b: 150 + legendHeight }} }};
+  }}
+  const narrow = element.clientWidth < 500;
+  const title = {{ ...layout.title, font: {{ size: narrow ? 14 : 16 }} }};
+  if (narrow && title.text) {{
+    title.text = title.text.replace(/(.{{1,38}})(?:\\s+|$)/g, "$1<br>").replace(/<br>$/, "");
+  }}
+  const margin = {{ t: narrow ? 90 : 65, b: 70, l: 65, r: 30, ...layout.margin }};
+  const yaxis = {{ ...layout.yaxis, automargin: true }};
+  const xaxis = {{ ...layout.xaxis, automargin: true }};
+  if (narrow) {{
+    margin.l = Math.min(margin.l, 115);
+    margin.r = 25;
+    const horizontal = traces.find(trace => trace.orientation === "h");
+    if (horizontal) {{
+      margin.r = Math.min((layout.margin || {{}}).r || 60, 100);
+      yaxis.automargin = false;
+      yaxis.title = undefined;
+      yaxis.tickvals = horizontal.y;
+      yaxis.ticktext = horizontal.y.map(label => {{
+        const text = String(label);
+        return escapeHtml(text.length > 16 ? text.slice(0, 15) + "..." : text);
+      }});
+    }}
+  }}
+  const legend = {{ orientation: "h", x: 0, y: -0.3, ...layout.legend }};
+  return Plotly.react(id, traces, {{
+    ...layout, title, margin, xaxis, yaxis, legend,
+    autosize: true, width: element.clientWidth,
+    font: {{ family: "Segoe UI, sans-serif", size: 12, color: "#374151" }},
+    paper_bgcolor: "#ffffff", plot_bgcolor: "#ffffff",
+  }}, config);
+}}
+
 function render() {{
+  chartRevision += 1;
   const excludedProjects = loadExcluded("project");
   const excludedModels = loadExcluded("model");
   const excludedProviders = loadExcluded("provider");
   document.querySelectorAll(".proj-check").forEach(cb => {{ cb.checked = !excludedProjects.has(cb.value); }});
   document.querySelectorAll(".model-check").forEach(cb => {{ cb.checked = !excludedModels.has(cb.value); }});
   document.querySelectorAll(".provider-check").forEach(cb => {{ cb.checked = !excludedProviders.has(cb.value); }});
+  updateFilterState(excludedProviders);
+  document.getElementById("data-freshness").textContent = GLOBAL_MAX_DATE
+    ? "Data through " + GLOBAL_MAX_DATE : "No dated usage available";
 
   const metric = getMetric();
   const valKey = metric === "cost" ? "estimated_cost" : "total_tokens";
   const fmtVal = metric === "cost" ? fmtCurrency : fmtCompact;
   const unitLabel = metric === "cost" ? "estimated cost ($)" : "tokens";
   // Longer, explicit axis titles so units are unambiguous at a glance (not just in hover text)
-  const valAxisTitle = metric === "cost" ? "Estimated cost, USD (list price)" : "Total tokens (input + output, summed)";
-  document.getElementById("metric-tokens").classList.toggle("active", metric === "tokens");
-  document.getElementById("metric-cost").classList.toggle("active", metric === "cost");
+  const valAxisTitle = metric === "cost" ? "Estimated USD (list price)" : "Input + output tokens";
+  setPressed(document.getElementById("metric-tokens"), metric === "tokens");
+  setPressed(document.getElementById("metric-cost"), metric === "cost");
 
   const dateFilter = getDateFilter();
   const cutoffDateStr = computeCutoffDate(dateFilter);
   ["7", "14", "30", "90", "all"].forEach(v => {{
     const btn = document.getElementById("date-" + v);
-    if (btn) btn.classList.toggle("active", dateFilter === v);
+    if (btn) setPressed(btn, dateFilter === v);
   }});
   const dateHintEl = document.getElementById("date-range-hint");
   if (dateHintEl) {{
     dateHintEl.textContent = dateFilter === "all"
-      ? "Showing all dates in the loaded export(s)"
-      : ("Showing " + (cutoffDateStr || "?") + " \u2192 " + (GLOBAL_MAX_DATE || "?") + " (last " + dateFilter + " days of data)");
+      ? "All exported dates"
+      : ((cutoffDateStr || "?") + " \u2192 " + (GLOBAL_MAX_DATE || "?") + " (relative to latest export date)");
   }}
 
   // Single choke point for every project/model/provider/date filter - every
@@ -1615,24 +1847,39 @@ function render() {{
   const nModels = new Set(filtered.map(r => r.model)).size;
   const nUsers = new Set(filtered.map(r => r.user)).size;
   const dates = filtered.map(r => r.date).filter(Boolean).sort();
-  const dateRange = dates.length ? (escapeHtml(dates[0]) + " &rarr; " + escapeHtml(dates[dates.length - 1])) : "n/a";
+  const dateRange = dates.length ? (dates[0] + " to " + dates[dates.length - 1]) : "No matching dates";
+  document.getElementById("scope-summary").textContent = dates.length
+    ? `${{dateRange}} · ${{nProjects}} projects · ${{nModels}} models · ${{nUsers}} user${{nUsers === 1 ? "" : "s"}}`
+    : "No matching usage. Adjust the date range or reset filters.";
   document.getElementById("kpi-row").innerHTML = `
-    <div class="kpi" title="Sum of total_tokens across every call matching the current project/model/date filters. total_tokens = input_tokens + output_tokens ONLY - it does NOT include cache-read, cache-write, or reasoning tokens, which are separate additive categories (see the Composition section's token-category chart)."><div class="kpi-value">${{fmt(totalTokens)}}</div><div class="kpi-label">Total tokens (input+output)</div></div>
-    <div class="kpi" title="Estimated USD cost using GitHub's published per-token list prices, computed from total_nano_aiu for the same filtered calls. Estimate only - plan allowances, included credits, or discounts are not reflected. This total is only as complete as the Cost data coverage KPI below; if coverage is under 100%, this figure UNDERSTATES true cost."><div class="kpi-value">${{fmtCurrency(totalCost)}}</div><div class="kpi-label">Est. cost (list price)</div></div>
-    <div class="kpi" title="Share of the current selection's calls with CONFIRMED cost data (cost_data_calls from extract_usage.py, a coverage count - not a cost figure). ${{fmt(coverage.confirmedCalls)}} of ${{fmt(totalCalls)}} calls confirmed here; ${{fmt(coverage.missingKnownCalls)}} confirmed to have NO recorded cost; ${{fmt(coverage.unknownCalls)}} come from an export that predates cost-coverage tracking (export_format_version before 3) and are of UNKNOWN coverage. Below 100% means Est. cost and the Value-for-Money chart may understate true spend - a $0 or 'cheapest' result is not proof of free/cheap usage."><div class="kpi-value"${{coverageStyle}}>${{coverageLabel}}</div><div class="kpi-label">Cost data coverage</div></div>
-    <div class="kpi" title="Number of model invocations (API calls) in the current filters."><div class="kpi-value">${{fmt(totalCalls)}}</div><div class="kpi-label">Model calls</div></div>
-    <div class="kpi" title="Number of distinct projects/tasks with at least one matching call."><div class="kpi-value">${{nProjects}}</div><div class="kpi-label">Projects/tasks shown</div></div>
-    <div class="kpi" title="Number of distinct AI models used among the matching calls."><div class="kpi-value">${{nModels}}</div><div class="kpi-label">Models shown</div></div>
-    <div class="kpi" title="Number of distinct user accounts represented in the matching calls."><div class="kpi-value">${{nUsers}}</div><div class="kpi-label">Users</div></div>
-    <div class="kpi" title="Earliest and latest calendar date among the matching calls, after applying the Date range quick filter below."><div class="kpi-value">${{dateRange}}</div><div class="kpi-label">Date range</div></div>
+    <div class="kpi">
+      <div class="kpi-label">Total tokens (input+output)</div>
+      <div class="kpi-value">${{fmtHeadline(totalTokens)}}</div>
+      <details class="kpi-note"><summary>Exact total &amp; definition</summary>${{fmt(totalTokens)}} tokens. This does NOT include cache-read, cache-write, or reasoning tokens. See Composition for those separate counters.</details>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">Est. cost (list price)</div>
+      <div class="kpi-value">${{fmtCurrency(totalCost)}}</div>
+      <div class="kpi-note">Estimate only, not your invoice.</div>
+      <details class="kpi-note"${{coverageStyle}}${{coverageWarn ? " open" : ""}}>
+        <summary>Cost data coverage: ${{coverageLabel}}</summary>
+        ${{fmt(coverage.confirmedCalls)}} of ${{fmt(totalCalls)}} calls confirmed.
+        ${{fmt(coverage.missingKnownCalls)}} missing. ${{fmt(coverage.unknownCalls)}} calls have UNKNOWN coverage (older exports).
+        ${{coverageWarn ? "Incomplete coverage UNDERSTATES true cost." : "Plan allowances and discounts are not reflected."}}
+      </details>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">Model calls</div><div class="kpi-value">${{fmt(totalCalls)}}</div>
+      <div class="kpi-note">API calls in the current selection</div>
+    </div>
   `;
 
   // Top projects
   const byProject = groupSum(filtered, r => r.project, valKey);
   const topProjects = Array.from(byProject.entries()).sort((a, b) => b[1] - a[1]).slice(0, 15);
-  Plotly.react("fig_project", [{{
+  drawChart("fig_project", [{{
     x: topProjects.map(p => p[1]), y: topProjects.map(p => p[0]),
-    type: "bar", orientation: "h", marker: {{ color: "#2f6feb" }},
+    type: "bar", orientation: "h", marker: {{ color: OKABE_ITO.blue }},
     text: topProjects.map(p => fmtVal(p[1])), textposition: "outside", cliponaxis: false,
     hovertemplate: "%{{y}}: %{{x:,}} " + unitLabel + "<extra></extra>",
   }}], {{
@@ -1642,48 +1889,55 @@ function render() {{
     margin: {{ l: 260, r: 60 }},
   }}, {{ responsive: true }});
 
-  // Share by model
+  // Ranked models stay readable when the selection contains many models.
   const byModel = groupSum(filtered, r => r.model, valKey);
   const modelEntries = Array.from(byModel.entries()).sort((a, b) => b[1] - a[1]);
-  Plotly.react("fig_model", [{{
-    labels: modelEntries.map(m => m[0]), values: modelEntries.map(m => m[1]), type: "pie", hole: 0.4,
-    marker: {{ colors: modelEntries.map(m => MODEL_COLORS[m[0]] || "#2f6feb") }},
-    textinfo: "label+percent", texttemplate: "%{{label}}<br>%{{percent}} (%{{customdata}})",
-    customdata: modelEntries.map(m => fmtVal(m[1])),
-    hovertemplate: "%{{label}}: %{{value:,}} " + unitLabel + " (%{{percent}})<extra></extra>",
-  }}], {{ title: {{ text: (metric === "cost" ? "Cost Share by Model" : "Token Share by Model") + " (selected)" }}, showlegend: false }}, {{ responsive: true }});
+  const modelTotal = sum(filtered, valKey);
+  document.getElementById("fig_model").style.height = Math.max(320, modelEntries.length * 30 + 130) + "px";
+  drawChart("fig_model", [{{
+    x: modelEntries.map(m => m[1]), y: modelEntries.map(m => m[0]), type: "bar", orientation: "h",
+    marker: {{ color: modelEntries.map(m => MODEL_COLORS[m[0]]) }},
+    text: modelEntries.map(m => fmtVal(m[1]) + " (" + (modelTotal > 0 ? (100 * m[1] / modelTotal).toFixed(0) : 0) + "%)"),
+    textposition: "outside", cliponaxis: false,
+    hovertemplate: "%{{y}}: %{{x:,}} " + unitLabel + "<extra></extra>",
+  }}], {{
+    title: {{ text: metric === "cost" ? "Estimated cost by model" : "Token usage by model" }},
+    showlegend: false, yaxis: {{ autorange: "reversed" }}, margin: {{ l: 160, r: 100 }},
+    xaxis: {{ title: {{ text: metric === "cost" ? "Estimated USD" : "Input + output tokens" }} }},
+  }}, {{ responsive: true }});
 
   // Provider Mix - same `filtered` array (so it always reflects the current
   // project/model/provider/date selection, including the Provider panel
   // itself), grouped by the `provider` field derived once at build time by
   // provider_classifier.py (never recomputed here). Uses PROVIDER_COLORS
-  // (fixed per provider name) rather than MODEL_COLORS/MODEL_PALETTE, so
-  // this chart's legend never overlaps or gets confused with the per-model
-  // pie above. "Other / Unknown" is rendered like any other provider - it is
+  // (fixed per provider name), also inherited by the model-level charts.
+  // "Other / Unknown" is rendered like any other provider - it is
   // only absent from the chart when there are literally zero matching rows.
   //
   // A provider whose aggregate is exactly zero draws no pie slice and no
   // label - most likely in Cost mode, where legacy exports carry no cost
   // data at all and default to 0. The legend is therefore kept ON for this
-  // chart (unlike the per-model pie above): it is the only remaining place a
+  // chart: it is the only remaining place a
   // zero-valued provider - notably "Other / Unknown" - stays visible. If
   // EVERY selected provider is zero there is no pie to draw at all, so an
   // explicit no-data message naming those providers replaces it.
   const byProvider = groupSum(filtered, r => r.provider, valKey);
   const providerEntries = Array.from(byProvider.entries()).sort((a, b) => b[1] - a[1]);
+  renderProviderLegend("model-provider-legend", new Set(byProvider.keys()));
   const providerTotal = providerEntries.reduce((acc, p) => acc + p[1], 0);
   const providerAllZero = providerEntries.length > 0 && providerTotal <= 0;
   const providerEmptyText = "No " + (metric === "cost" ? "estimated cost" : "token") + " data for the selected providers<br>("
     + providerEntries.map(p => p[0]).join(", ") + ")"
     + (metric === "cost" ? "<br>These rows have no recorded cost - switch to Tokens to see them." : "");
-  Plotly.react("fig_provider", providerAllZero ? [] : [{{
+  drawChart("fig_provider", providerAllZero ? [] : [{{
     labels: providerEntries.map(p => p[0]), values: providerEntries.map(p => p[1]), type: "pie", hole: 0.4,
     marker: {{ colors: providerEntries.map(p => PROVIDER_COLORS[p[0]] || "#8c959f") }},
-    textinfo: "label+percent", texttemplate: "%{{label}}<br>%{{percent}} (%{{customdata}})",
+    textinfo: "percent", textposition: "inside",
+    texttemplate: providerEntries.map(p => providerTotal > 0 && p[1] / providerTotal >= 0.05 ? "%{{percent}}" : ""),
     customdata: providerEntries.map(p => fmtVal(p[1])),
     hovertemplate: "%{{label}}: %{{value:,}} " + unitLabel + " (%{{percent}})<extra></extra>",
   }}], {{
-    title: {{ text: (metric === "cost" ? "Cost Share by Provider" : "Token Share by Provider") + " (inferred from model name, selected)" }},
+    title: {{ text: metric === "cost" ? "Cost share by provider (inferred)" : "Token share by provider (inferred)" }},
     showlegend: true,
     annotations: providerAllZero
       ? [{{ text: providerEmptyText, showarrow: false, x: 0.5, y: 0.5, xref: "paper", yref: "paper", align: "center" }}]
@@ -1701,14 +1955,16 @@ function render() {{
   if (insightOverview) {{
     const bits = [];
     if (topProjects.length) {{
-      const topShare = totalTokens > 0 ? (100 * sum(filtered.filter(r => r.project === topProjects[0][0]), "total_tokens") / totalTokens).toFixed(0) : 0;
-      bits.push(`<div class="insight"><span>&#128200;</span><span><b>${{escapeHtml(topProjects[0][0])}}</b> is your top project, accounting for <b>${{topShare}}%</b> of total tokens in the current selection.</span></div>`);
+      const selectedTotal = sum(filtered, valKey);
+      const topShare = selectedTotal > 0 ? (100 * topProjects[0][1] / selectedTotal).toFixed(0) : 0;
+      bits.push(`<span><b>${{escapeHtml(topProjects[0][0])}}</b> accounts for <b>${{topShare}}%</b> of selected ${{unitLabel}}.</span>`);
     }}
     if (modelEntries.length) {{
-      const topModelShare = totalTokens > 0 ? (100 * sum(filtered.filter(r => r.model === modelEntries[0][0]), "total_tokens") / totalTokens).toFixed(0) : 0;
-      bits.push(`<div class="insight good"><span>&#129504;</span><span><b>${{escapeHtml(modelEntries[0][0])}}</b> is your most-used model, at <b>${{topModelShare}}%</b> of total tokens.</span></div>`);
+      const selectedTotal = sum(filtered, valKey);
+      const topModelShare = selectedTotal > 0 ? (100 * modelEntries[0][1] / selectedTotal).toFixed(0) : 0;
+      bits.push(`<span>Leading model: <b>${{escapeHtml(modelEntries[0][0])}}</b> (${{topModelShare}}%).</span>`);
     }}
-    insightOverview.innerHTML = bits.join("");
+    insightOverview.innerHTML = bits.length ? '<div class="insight"><span>' + bits.join(" ") + '</span></div>' : "";
   }}
 
   // Trend over time
@@ -1721,10 +1977,13 @@ function render() {{
   const trendAxisTitle = granularity === "day"
     ? "Date (calendar day)"
     : granularity === "week" ? "Week starting (Monday)" : "Month (calendar)";
-  Plotly.react("fig_trend", [{{
+  const peakValue = dateEntries.reduce((peak, d) => Math.max(peak, d[1]), 0);
+  drawChart("fig_trend", [{{
     x: dateEntries.map(d => d[0]), y: dateEntries.map(d => d[1]), type: "scatter", mode: "lines+markers+text",
-    line: {{ color: "#238636", width: 2.5 }}, marker: {{ size: 6 }}, fill: "tozeroy", fillcolor: "rgba(35,134,54,0.08)",
-    text: dateEntries.map(d => fmtVal(d[1])), textposition: "top center",
+    line: {{ color: OKABE_ITO.blue, width: 2.5 }}, marker: {{ size: 6 }}, fill: "tozeroy", fillcolor: "rgba(0,114,178,0.10)",
+    text: dateEntries.map((d, i) => i === dateEntries.length - 1 || d[1] === peakValue ? fmtVal(d[1]) : ""),
+    textposition: dateEntries.map((d, i) => i === dateEntries.length - 1 ? "top left" : "top center"),
+    cliponaxis: false,
     hovertemplate: "%{{x}}: %{{y:,}} " + unitLabel + "<extra></extra>",
   }}], {{ title: {{ text: trendTitle + " (by " + trendUnit + ")" }}, xaxis: {{ title: {{ text: trendAxisTitle }} }}, yaxis: {{ title: {{ text: valAxisTitle }} }} }}, {{ responsive: true }});
 
@@ -1748,19 +2007,20 @@ function render() {{
   // Model mix per top project (stacked)
   const topProjectNames = topProjects.map(p => p[0]);
   const modelsSet = new Set(filtered.filter(r => topProjectNames.includes(r.project)).map(r => r.model));
-  const stackTraces = Array.from(modelsSet).map(model => {{
+  const stackTraces = Array.from(modelsSet).sort().map(model => {{
     const perProject = topProjectNames.map(proj => sum(filtered.filter(r => r.project === proj && r.model === model), valKey));
     return {{
       name: model, x: topProjectNames, y: perProject, type: "bar",
-      marker: {{ color: MODEL_COLORS[model] || "#2f6feb" }},
+      marker: {{ color: MODEL_MIX_COLORS[model], line: {{ color: "#ffffff", width: 1 }} }},
       text: perProject.map(v => v > 0 ? fmtVal(v) : ""), textposition: "inside", insidetextanchor: "middle",
       hovertemplate: "%{{x}}<br>" + model + ": %{{y:,}} " + unitLabel + "<extra></extra>",
     }};
   }});
-  Plotly.react("fig_stack", stackTraces, {{
+  drawChart("fig_stack", stackTraces, {{
     barmode: "stack", title: {{ text: "Model Mix per Top Project (stacked by model)" }},
     xaxis: {{ title: {{ text: "Project (top 15 by " + (metric === "cost" ? "cost" : "tokens") + ")" }}, tickangle: -35 }},
-    yaxis: {{ title: {{ text: valAxisTitle }} }}, margin: {{ b: 150 }},
+    yaxis: {{ title: {{ text: valAxisTitle }} }},
+    legend: {{ orientation: "h", x: 0, y: 0, yref: "container", yanchor: "bottom", traceorder: "normal", entrywidth: 220 }},
   }}, {{ responsive: true }});
 
   // Token category composition - ALWAYS raw token counts (not cost), since these five
@@ -1768,15 +2028,15 @@ function render() {{
   // See TOKEN_CATEGORIES/computeTokenComposition() and the card's info-icon for the full
   // "these don't sum to total_tokens or to cost" caveat.
   const composition = computeTokenComposition(filtered);
-  Plotly.react("fig_token_composition", [{{
+  drawChart("fig_token_composition", [{{
     x: TOKEN_CATEGORIES.map(c => c.label), y: TOKEN_CATEGORIES.map(c => composition.totals[c.key]),
-    type: "bar", marker: {{ color: ["#2f6feb", "#3fb950", "#79c0ff", "#a371f7", "#db6d28"] }},
+    type: "bar", marker: {{ color: TOKEN_CATEGORIES.map(c => c.color) }},
     text: TOKEN_CATEGORIES.map(c => fmtCompact(composition.totals[c.key])), textposition: "outside", cliponaxis: false,
     hovertemplate: "%{{x}}: %{{y:,}} tokens<extra></extra>",
   }}], {{
-    title: {{ text: "Token Composition by Category (independent counters, not parts of one total)" }},
+    title: {{ text: "Token categories (independent counters)" }},
     xaxis: {{ title: {{ text: "Token category" }} }},
-    yaxis: {{ title: {{ text: "Tokens (raw count - always shown regardless of the Tokens/Cost toggle)" }} }},
+    yaxis: {{ title: {{ text: "Tokens (always raw counts)" }} }},
   }}, {{ responsive: true }});
   const compositionNote = document.getElementById("composition-note");
   if (compositionNote) {{
@@ -1827,19 +2087,20 @@ function render() {{
   // entirely (never shown with an infinite/undefined tok/$ ratio) - without
   // needing to parse rendered chart markup.
   window.__debugValueEntries = valueEntries;
-  Plotly.react("fig_value", [{{
+  drawChart("fig_value", [{{
     x: valueEntries.map(v => v.tpd), y: valueEntries.map(v => v.model + (v.coverageComplete ? "" : " *")),
-    type: "bar", orientation: "h", marker: {{ color: valueEntries.map(v => MODEL_COLORS[v.model] || "#bf8700") }},
-    text: valueEntries.map(v => fmtCompact(v.tpd) + " tok/$ (" + fmt(v.calls) + " calls)" + (v.coverageComplete ? "" : " \u26a0")),
+    type: "bar", orientation: "h", marker: {{ color: valueEntries.map(v => MODEL_COLORS[v.model]) }},
+    text: valueEntries.map(v => fmtCompact(v.tpd) + " tok/$" + (v.coverageComplete ? "" : " *")),
     textposition: "outside", cliponaxis: false,
-    hovertemplate: valueEntries.map(v => (v.model + ": %{{x:,.0f}} tokens per $ spent" +
+    hovertemplate: valueEntries.map(v => (v.model + ": %{{x:,.0f}} tokens per $ spent (" + fmt(v.calls) + " calls)" +
       (v.coverageComplete ? "" : " (this model also has some rows with incomplete cost data - ratio above is computed only from this model's rows with fully confirmed cost, and may not reflect its full usage)")) + "<extra></extra>"),
   }}], {{
-    title: {{ text: "Value for Money \u2014 Tokens per Dollar by Model" }},
-    xaxis: {{ title: {{ text: "Tokens per USD of estimated cost (higher = cheaper per token), computed only from calls with fully confirmed cost data. * = model also has some rows with incomplete cost-data coverage not reflected in this ratio." }} }},
-    yaxis: {{ title: {{ text: "Model (ranked highest value first)" }}, autorange: "reversed" }},
+    title: {{ text: "Pricing efficiency by model" }},
+    xaxis: {{ title: {{ text: "Tokens per estimated USD (confirmed calls)" }} }},
+    yaxis: {{ title: {{ text: "Model (tokens per dollar)" }}, autorange: "reversed" }},
     margin: {{ l: 160, r: 140 }},
   }}, {{ responsive: true }});
+  renderProviderLegend("value-provider-legend", new Set(valueEntries.map(v => MODEL_PROVIDERS.get(v.model))));
 
   // Coverage insight: a visible warning whenever ANY call in the current selection lacks
   // confirmed cost data, so a $0/"cheap" cost figure is never mistaken for a confirmed one.
@@ -1881,7 +2142,7 @@ function render() {{
   if (patternsNote) {{
     patternsNote.innerHTML = taskData.length
       ? "Themes are inferred from task-summary keywords; unclassified summaries appear as <b>Other</b>. Use this as a workflow signal, not a productivity score."
-      : "No task summaries are available. Re-run <code>extract_usage.py --include-task-summary</code> to populate Work patterns.";
+      : "No task summaries are available. Re-run <code>extract_usage.py</code> without <code>--exclude-task-summary</code> (and without <code>--omit-task-summaries</code> at build time) to populate Work patterns.";
   }}
 
   const themeTimeMap = new Map();
@@ -1900,7 +2161,7 @@ function render() {{
     marker: {{ color: TASK_THEME_COLORS[theme] }},
     hovertemplate: "%{{x}}<br>" + theme + ": %{{y:,}} " + unitLabel + "<extra></extra>",
   }})).filter(trace => trace.y.some(v => v > 0));
-  Plotly.react("fig_theme_time", themeTimeTraces, {{
+  drawChart("fig_theme_time", themeTimeTraces, {{
     barmode: "stack",
     title: {{ text: "Inferred Task Themes Over Time (by " + trendUnit + ")" }},
     xaxis: {{ title: {{ text: trendAxisTitle }} }},
@@ -1913,12 +2174,14 @@ function render() {{
       .filter(r => r.theme === theme && r.model === model)
       .reduce((total, r) => total + (r[valKey] || 0), 0))
   );
-  Plotly.react("fig_theme_model", [{{
+  drawChart("fig_theme_model", [{{
     x: themeModels,
     y: TASK_THEME_ORDER,
     z: themeModelValues,
     type: "heatmap",
-    colorscale: "Blues",
+    colorscale: "Viridis",
+    zmin: 0,
+    zmax: themeModelValues.reduce((max, row) => row.reduce((m, value) => Math.max(m, value), max), 0) || 1,
     text: themeModelValues.map(row => row.map(v => fmtVal(v))),
     texttemplate: "%{{text}}",
     hovertemplate: "%{{y}}<br>%{{x}}: %{{z:,}} " + unitLabel + "<extra></extra>",
@@ -1936,13 +2199,12 @@ function render() {{
     modeValues.set(mode, (modeValues.get(mode) || 0) + (r[valKey] || 0));
   }}
   const modeEntries = Array.from(modeValues.entries()).sort((a, b) => b[1] - a[1]);
-  const modeColors = {{ Exploration: "#8250df", Execution: "#2f6feb", Planning: "#bf8700", "Review/support": "#1a7f37", Other: "#8c959f" }};
-  Plotly.react("fig_work_mode", [{{
+  drawChart("fig_work_mode", [{{
     labels: modeEntries.map(entry => entry[0]),
     values: modeEntries.map(entry => entry[1]),
     type: "pie",
     hole: 0.48,
-    marker: {{ colors: modeEntries.map(entry => modeColors[entry[0]] || "#8c959f") }},
+    marker: {{ colors: modeEntries.map(entry => WORK_MODE_COLORS[entry[0]] || UNKNOWN_COLOR) }},
     textinfo: "label+percent",
     texttemplate: "%{{label}}<br>%{{percent}} (%{{value:.3s}})",
     hovertemplate: "%{{label}}: %{{value:,}} " + unitLabel + " (%{{percent}})<extra></extra>",
@@ -1955,8 +2217,8 @@ function render() {{
   if (document.getElementById("fig_user")) {{
     const byUser = groupSum(filtered, r => r.user, valKey);
     const userEntries = Array.from(byUser.entries()).sort((a, b) => b[1] - a[1]);
-    Plotly.react("fig_user", [{{
-      x: userEntries.map(u => u[0]), y: userEntries.map(u => u[1]), type: "bar", marker: {{ color: "#8250df" }},
+    drawChart("fig_user", [{{
+      x: userEntries.map(u => u[0]), y: userEntries.map(u => u[1]), type: "bar", marker: {{ color: OKABE_ITO.blue }},
       text: userEntries.map(u => fmtVal(u[1])), textposition: "outside", cliponaxis: false,
       hovertemplate: "%{{x}}: %{{y:,}} " + unitLabel + "<extra></extra>",
     }}], {{ title: {{ text: metric === "cost" ? "Estimated Cost by User" : "Total Tokens by User" }}, xaxis: {{ title: {{ text: "User" }} }}, yaxis: {{ title: {{ text: valAxisTitle }} }} }}, {{ responsive: true }});
@@ -1965,17 +2227,17 @@ function render() {{
   // Reasoning effort mix - higher effort burns more reasoning tokens & costs more
   const effortOrder = ["none", "low", "medium", "high", "n/a"];
   const byEffort = groupSum(filtered, r => r.reasoning_effort || "n/a", valKey);
-  const effortEntries = Array.from(byEffort.entries()).sort((a, b) => effortOrder.indexOf(a[0]) - effortOrder.indexOf(b[0]));
-  const effortColors = {{ none: "#8c959f", low: "#54aeff", medium: "#2f6feb", high: "#a371f7", "n/a": "#d0d7de" }};
+  const effortRank = effort => effortOrder.includes(effort) ? effortOrder.indexOf(effort) : effortOrder.length;
+  const effortEntries = Array.from(byEffort.entries()).sort((a, b) => effortRank(a[0]) - effortRank(b[0]));
   if (document.getElementById("fig_effort")) {{
-    Plotly.react("fig_effort", [{{
+    drawChart("fig_effort", [{{
       x: effortEntries.map(e => e[0]), y: effortEntries.map(e => e[1]), type: "bar",
-      marker: {{ color: effortEntries.map(e => effortColors[e[0]] || "#2f6feb") }},
+      marker: {{ color: effortEntries.map(e => EFFORT_COLORS[e[0]] || UNKNOWN_COLOR) }},
       text: effortEntries.map(e => fmtVal(e[1])), textposition: "outside", cliponaxis: false,
       hovertemplate: "%{{x}} effort: %{{y:,}} " + unitLabel + "<extra></extra>",
     }}], {{
       title: {{ text: (metric === "cost" ? "Estimated Cost" : "Tokens") + " by Reasoning Effort" }},
-      xaxis: {{ title: {{ text: "Reasoning effort (model's reasoning depth setting)" }} }}, yaxis: {{ title: {{ text: valAxisTitle }} }},
+      xaxis: {{ title: {{ text: "Configured reasoning effort" }} }}, yaxis: {{ title: {{ text: valAxisTitle }} }},
     }}, {{ responsive: true }});
   }}
 
@@ -2003,19 +2265,22 @@ function setAll(kind, checked) {{
   render();
 }}
 
-function resizeAllCharts() {{
-  document.querySelectorAll(".js-plotly-plot").forEach(el => {{
-    try {{ Plotly.Plots.resize(el); }} catch (e) {{ /* chart not yet drawn */ }}
-  }});
-}}
-
 function applySidebarState(collapsed) {{
   const layout = document.getElementById("layout");
+  const panel = document.getElementById("sidebar-shell");
+  if (window.matchMedia("(max-width: 760px)").matches) {{
+    document.getElementById("usage-toolbar").after(panel);
+  }} else {{
+    layout.insertBefore(panel, document.getElementById("dashboard-main"));
+  }}
   const icon = document.getElementById("sidebar-toggle-icon");
   const btn = document.getElementById("sidebar-toggle");
   layout.classList.toggle("sidebar-collapsed", collapsed);
   icon.innerHTML = collapsed ? "&raquo;" : "&laquo;";
   btn.title = collapsed ? "Show the Projects, Models, and Providers filter panel" : "Hide the Projects, Models, and Providers filter panel";
+  btn.setAttribute("aria-expanded", String(!collapsed));
+  btn.setAttribute("aria-label", collapsed ? "Show filters" : "Hide filters");
+  document.getElementById("sidebar-toggle-label").textContent = collapsed ? "Show filters" : "Hide filters";
 }}
 
 function toggleSidebar() {{
@@ -2023,8 +2288,19 @@ function toggleSidebar() {{
   const next = !collapsed;
   localStorage.setItem(STORAGE_KEY_SIDEBAR, next ? "1" : "0");
   applySidebarState(next);
-  // Wait for the flex transition to finish before telling Plotly to resize.
-  setTimeout(resizeAllCharts, 180);
+  // Recompute chart label spacing after the available width changes.
+  scheduleChartRender();
+}}
+
+let resizeTimer;
+function scheduleChartRender() {{
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {{
+    // Reuse live traces so legend selections survive without rebuilding controls.
+    chartLayouts.forEach(({{ layout, config }}, id) => {{
+      drawChart(id, document.getElementById(id).data, layout, config);
+    }});
+  }}, 180);
 }}
 
 document.addEventListener("change", (e) => {{
@@ -2036,7 +2312,28 @@ document.addEventListener("change", (e) => {{
   render();
 }});
 
-applySidebarState(localStorage.getItem(STORAGE_KEY_SIDEBAR) === "1");
+function makeChartHelpAccessible() {{
+  document.querySelectorAll(".info-icon").forEach(icon => {{
+    const details = document.createElement("details");
+    details.className = "chart-help";
+    const summary = document.createElement("summary");
+    summary.textContent = "About this chart";
+    const explanation = document.createElement("p");
+    explanation.textContent = icon.title;
+    details.appendChild(summary);
+    details.appendChild(explanation);
+    icon.replaceWith(details);
+  }});
+}}
+
+makeChartHelpAccessible();
+const smallScreen = window.matchMedia("(max-width: 760px)");
+applySidebarState(smallScreen.matches || localStorage.getItem(STORAGE_KEY_SIDEBAR) === "1");
+smallScreen.addEventListener("change", () => {{
+  applySidebarState(smallScreen.matches || localStorage.getItem(STORAGE_KEY_SIDEBAR) === "1");
+  scheduleChartRender();
+}});
+window.addEventListener("resize", scheduleChartRender);
 render();
 </script>
 </body>

@@ -75,7 +75,7 @@ def test_dashboard_smoke_generation_from_valid_csv(tmp_path):
     out_path = tmp_path / "out.html"
     dashboard.build_dashboard(data, str(out_path), "Title", [], [], storage_key="k")
     html = out_path.read_text(encoding="utf-8")
-    assert "<html>" in html
+    assert '<html lang="en">' in html
     assert "org/repo" in html
 
 

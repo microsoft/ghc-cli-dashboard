@@ -70,11 +70,18 @@ function makeFakeEl(id) {
     value: "",
     checked: false,
     title: "",
+    hidden: false,
+    disabled: false,
+    attributes: {},
+    clientWidth: 900,
+    setAttribute(name, value) { this.attributes[name] = String(value); },
     addEventListener() {},
     focus() {},
     setSelectionRange() {},
     querySelectorAll() { return []; },
     appendChild() {},
+    insertBefore() {},
+    after() {},
     remove() {},
     select() {},
   };
@@ -90,6 +97,29 @@ const documentStub = {
   createElement() { return makeFakeEl("__tmp__"); },
   body: { appendChild() {} },
 };
+
+// Only parse the generated filter markup. This is not a general HTML parser.
+function decodeAttribute(value) {
+  return value.replace(/&quot;/g, '"').replace(/&#x27;|&#39;/g, "'")
+    .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+}
+const checkboxes = [];
+for (const match of html.matchAll(/<input type="checkbox" class="([^"]+)" value="([^"]*)" checked>/g)) {
+  const cb = makeFakeEl("checkbox-" + checkboxes.length);
+  cb.checkboxClass = match[1];
+  cb.value = decodeAttribute(match[2]);
+  cb.classList.add(match[1]);
+  const row = makeFakeEl("row-" + checkboxes.length);
+  const blocked = makeFakeEl("blocked-" + checkboxes.length);
+  const only = makeFakeEl("only-" + checkboxes.length);
+  row.querySelector = selector => selector === ".filter-blocked" ? blocked : only;
+  cb.closest = () => row;
+  cb.row = row;
+  cb.blocked = blocked;
+  cb.only = only;
+  checkboxes.push(cb);
+}
+documentStub.querySelectorAll = selector => checkboxes.filter(cb => selector === "." + cb.checkboxClass);
 
 const storageMap = new Map();
 if (localStorageSeedArg) {
@@ -107,7 +137,10 @@ const localStorageStub = {
 // annotations) without a real Plotly renderer.
 const PLOTLY_FIGURES = {};
 const PlotlyStub = {
-  react(id, data, layout) { PLOTLY_FIGURES[id] = { data, layout }; },
+  react(id, data, layout) {
+    PLOTLY_FIGURES[id] = { data, layout };
+    documentStub.getElementById(id).data = data;
+  },
   Plots: { resize() {} },
 };
 
@@ -121,6 +154,8 @@ const sandbox = {
   clearTimeout,
   Date, Set, Map, Array, JSON, Math, String, Number, Boolean,
   parseFloat, parseInt, isNaN,
+  matchMedia() { return { matches: false, addEventListener() {} }; },
+  addEventListener() {},
 };
 sandbox.window = sandbox;
 sandbox.globalThis = sandbox;
@@ -133,6 +168,11 @@ vm.createContext(sandbox);
 // `sandbox.RAW` would otherwise be undefined outside the script.
 const mainScriptWithTestHook = mainScript + "\nwindow.__RAW_FOR_TESTS = (typeof RAW !== 'undefined') ? RAW : null;\n";
 vm.runInContext(mainScriptWithTestHook, sandbox, { filename: "dashboard-inline.js" });
+const allowedActions = new Set(["searchFilters", "showMoreFilters", "selectOnly", "resetFilters", "setAll", "setMetric", "setDateFilter", "setTrendGranularity", "toggleSidebar"]);
+for (const action of JSON.parse(process.argv[4] || "[]")) {
+  if (!allowedActions.has(action.name)) throw new Error("Unsupported harness action: " + action.name);
+  sandbox[action.name](...(action.args || []));
+}
 
 let tsv = "";
 try {
@@ -182,8 +222,13 @@ const out = {
   providerAllZero: sandbox.__debugProviderAllZero ?? null,
   figures: PLOTLY_FIGURES,
   filteredCount: sandbox.__debugFilteredCount ?? null,
+  storage: Object.fromEntries(storageMap),
+  checkboxes: checkboxes.map(cb => ({
+    kind: cb.checkboxClass, value: cb.value, checked: cb.checked, disabled: cb.disabled,
+    hidden: cb.row.hidden, providerBlocked: !cb.blocked.hidden, onlyDisabled: cb.only.disabled,
+  })),
 };
 for (const [id, el] of Object.entries(ELEMENTS)) {
-  out.elements[id] = { innerHTML: el._innerHTML, textContent: el._textContent };
+  out.elements[id] = { innerHTML: el._innerHTML, textContent: el._textContent, hidden: el.hidden, attributes: el.attributes };
 }
 console.log(JSON.stringify(out));
